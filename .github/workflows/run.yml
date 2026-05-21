@@ -3,7 +3,7 @@ name: Run Scraper
 on:
   schedule:
     - cron: "0 1 * * *"  # ✅ 08:00 WIB (UTC+7)
-  workflow_dispatch:     # ✅ manual button
+  workflow_dispatch:     # ✅ manual trigger
 
 jobs:
   run-script:
@@ -30,4 +30,6 @@ jobs:
       - name: Run scraper
         env:
           GOOGLE_CREDS: ${{ secrets.GOOGLE_CREDS }}
-        run: python scraper.py
+        run: |
+          python scraper.py
+``
