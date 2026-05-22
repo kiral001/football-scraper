@@ -4,7 +4,6 @@ import time
 import re
 import logging
 from datetime import date, timedelta
-
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -12,18 +11,16 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
-
+from webdriver_manager.chrome import ChromeDriverManager
 import gspread
 from google.oauth2.service_account import Credentials
 
-
 # ==============================
-# ✅ AUTO PATH (IMPORTANT)
+# ✅ AUTO PATH
 # ==============================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CREDENTIALS_PATH = os.path.join(BASE_DIR, "credentials.json")
 LOG_PATH = os.path.join(BASE_DIR, "scraper.log")
-
 
 # ==============================
 # ✅ LOGGING
@@ -33,7 +30,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
-
+# Also print to console so GitHub Actions shows logs live
+console = logging.StreamHandler()
+console.setLevel(logging.INFO)
+logging.getLogger().addHandler(console)
 
 # ==============================
 # ✅ DRIVER
@@ -44,14 +44,24 @@ def get_driver():
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
 
-    driver = webdriver.Chrome(service=Service(), options=options)
+    driver = webdriver.Chrome(
+        service=Service(ChromeDriverManager().install()),
+        options=options
+    )
     driver.execute_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     )
-
     return driver
-
 
 # ==============================
 # ✅ PARSE MATCH
@@ -60,13 +70,11 @@ def parse_match_card(match):
     try:
         text = match.text.strip()
         lines = [l.strip() for l in text.split("\n") if l.strip()]
-
         if len(lines) < 2:
             return None
 
         home = lines[0]
         away = lines[1]
-
         date_val = ""
         time_val = ""
 
@@ -83,30 +91,34 @@ def parse_match_card(match):
             "Date": date_val or "Unknown",
             "Time": time_val or "Unknown"
         }
-
     except Exception as e:
         logging.error(f"Parse error: {e}")
         return None
-
 
 # ==============================
 # ✅ SCRAPE
 # ==============================
 def scrape_competition(driver, name, url):
-    logging.info(f"Scraping {name}")
+    logging.info(f"Scraping {name} → {url}")
     driver.get(url)
 
     try:
-        WebDriverWait(driver, 20).until(
+        WebDriverWait(driver, 30).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/match/']"))
         )
     except TimeoutException:
-        logging.error(f"Timeout {name}")
+        logging.error(f"Timeout on {name}. Page source preview:")
+        logging.error(driver.page_source[:1000])
         return []
 
-    time.sleep(2)
+    # Scroll to trigger lazy loading
+    driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+    time.sleep(3)
+    driver.execute_script("window.scrollTo(0, 0)")
+    time.sleep(1)
 
     matches = driver.find_elements(By.CSS_SELECTOR, "a[href*='/match/']")
+    logging.info(f"Found {len(matches)} raw match elements for {name}")
 
     results = []
     for m in matches:
@@ -115,9 +127,8 @@ def scrape_competition(driver, name, url):
             parsed["Competition"] = name
             results.append(parsed)
 
-    logging.info(f"{name}: {len(results)} matches")
+    logging.info(f"{name}: {len(results)} valid matches parsed")
     return results
-
 
 # ==============================
 # ✅ DATE NORMALIZATION
@@ -125,30 +136,24 @@ def scrape_competition(driver, name, url):
 def normalize_date(d):
     today = date.today()
     d = str(d).lower().strip()
-
     if d == "today":
         return today.strftime("%d/%m/%Y")
     elif d == "tomorrow":
         return (today + timedelta(days=1)).strftime("%d/%m/%Y")
     elif d == "yesterday":
         return (today - timedelta(days=1)).strftime("%d/%m/%Y")
-
     return d
-
 
 # ==============================
 # ✅ GET DATA
 # ==============================
 def get_data():
     driver = get_driver()
-
     competitions = {
         "Premier League": "https://onefootball.com/en/competition/premier-league-9/fixtures",
         "LaLiga": "https://onefootball.com/en/competition/laliga-10/fixtures"
     }
-
     all_data = []
-
     for name, url in competitions.items():
         try:
             all_data.extend(scrape_competition(driver, name, url))
@@ -157,42 +162,48 @@ def get_data():
 
     driver.quit()
 
+    if not all_data:
+        logging.warning("No data collected from any competition!")
+        return pd.DataFrame()
+
     df = pd.DataFrame(all_data)
-
-    if df.empty:
-        return df
-
     df["VS"] = "VS"
     df["Date"] = df["Date"].apply(normalize_date)
-
     df = df[df["Time"].str.match(r"^\d{2}:\d{2}$", na=False)]
-
+    logging.info(f"Total rows after filtering: {len(df)}")
     return df
-
 
 # ==============================
 # ✅ MERGE LOGOS
 # ==============================
 def merge_logos(df):
-    logo_url = "https://docs.google.com/spreadsheets/d/1BLZ-YDZJqwk1LcSQ79bDOGcdue1OwdG4jrrXjSh6vKs/gviz/tq?tqx=out:csv"
-    logos = pd.read_csv(logo_url)
+    logo_url = (
+        "https://docs.google.com/spreadsheets/d/"
+        "1BLZ-YDZJqwk1LcSQ79bDOGcdue1OwdG4jrrXjSh6vKs"
+        "/gviz/tq?tqx=out:csv"
+    )
+    try:
+        logos = pd.read_csv(logo_url)
+        team_col = [c for c in logos.columns if "team" in c.lower()][0]
+        logo_col = [c for c in logos.columns if "logo" in c.lower()][0]
+        logos = logos[[team_col, logo_col]]
+        logos.columns = ["Team", "Logo"]
 
-    team_col = [c for c in logos.columns if "team" in c.lower()][0]
-    logo_col = [c for c in logos.columns if "logo" in c.lower()][0]
+        df = df.merge(logos, left_on="Home Team", right_on="Team", how="left")
+        df.rename(columns={"Logo": "Home Team Logo"}, inplace=True)
+        df.drop(columns=["Team"], inplace=True)
 
-    logos = logos[[team_col, logo_col]]
-    logos.columns = ["Team", "Logo"]
+        df = df.merge(logos, left_on="Away Team", right_on="Team", how="left")
+        df.rename(columns={"Logo": "Away Team Logo"}, inplace=True)
+        df.drop(columns=["Team"], inplace=True)
 
-    df = df.merge(logos, left_on="Home Team", right_on="Team", how="left")
-    df.rename(columns={"Logo": "Home Team Logo"}, inplace=True)
-    df.drop(columns=["Team"], inplace=True)
-
-    df = df.merge(logos, left_on="Away Team", right_on="Team", how="left")
-    df.rename(columns={"Logo": "Away Team Logo"}, inplace=True)
-    df.drop(columns=["Team"], inplace=True)
+        logging.info("Logos merged successfully")
+    except Exception as e:
+        logging.error(f"Logo merge failed: {e} — continuing without logos")
+        df["Home Team Logo"] = ""
+        df["Away Team Logo"] = ""
 
     return df
-
 
 # ==============================
 # ✅ GOOGLE SHEETS UPLOAD
@@ -204,29 +215,26 @@ def upload_to_sheets(df):
     ]
 
     if not os.path.exists(CREDENTIALS_PATH):
-        logging.error("❌ credentials.json not found!")
+        logging.error("credentials.json not found! Check GOOGLE_CREDS secret.")
         return
 
     creds = Credentials.from_service_account_file(
         CREDENTIALS_PATH,
         scopes=scope
     )
-
     client = gspread.authorize(creds)
 
     sheet = client.open_by_url(
         "https://docs.google.com/spreadsheets/d/1BhPU_hskjdgmuSHBcmoPhGxtUscpRLCRed_DITIIOq4/"
     )
-
     ws = sheet.sheet1
-
     ws.clear()
 
+    # Convert all values to string to avoid gspread type errors
+    df = df.fillna("").astype(str)
     data = [df.columns.tolist()] + df.values.tolist()
     ws.update(data)
-
-    logging.info("✅ Sheet updated successfully")
-
+    logging.info(f"Sheet updated! {len(df)} rows written.")
 
 # ==============================
 # ✅ SAFE RUN (RETRY)
@@ -234,24 +242,20 @@ def upload_to_sheets(df):
 def safe_run(max_retries=3):
     for i in range(max_retries):
         try:
-            logging.info("🚀 Script start")
-
+            logging.info(f"=== Attempt {i+1}/{max_retries} ===")
             df = get_data()
-
             if not df.empty:
                 df = merge_logos(df)
                 upload_to_sheets(df)
-                logging.info("✅ SUCCESS")
+                logging.info("SUCCESS — Script finished")
                 return
             else:
-                logging.warning("⚠️ No data scraped")
-
+                logging.warning(f"No data on attempt {i+1}, retrying...")
         except Exception as e:
-            logging.error(f"Retry {i+1} failed: {e}")
-            time.sleep(10)
+            logging.error(f"Attempt {i+1} failed: {e}")
+            time.sleep(15)
 
-    logging.error("❌ FAILED after retries")
-
+    logging.error("ALL RETRIES FAILED — check logs above for details")
 
 # ==============================
 # ✅ RUN
