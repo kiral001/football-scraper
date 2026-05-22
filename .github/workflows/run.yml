@@ -2,32 +2,36 @@ name: Run Scraper
 
 on:
   schedule:
-    - cron: "0 1 * * *"
-  workflow_dispatch:
+    - cron: "0 1 * * *"   # 08:00 WIB (UTC+7) every day
+  workflow_dispatch:        # allows manual trigger from GitHub UI
 
 jobs:
   run-script:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python 3.10
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Debug files
-        run: ls -R   # ✅ shows file structure
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
 
-      - run: pip install -r requirements.txt
+      - name: Setup Chrome
+        uses: browser-actions/setup-chrome@v1
 
-      - uses: browser-actions/setup-chrome@v1
-      - uses: nanasess/setup-chromedriver@v2
-
-      - name: Create credentials.json
+      - name: Create credentials.json from secret
         run: echo "$GOOGLE_CREDS" > credentials.json
         env:
           GOOGLE_CREDS: ${{ secrets.GOOGLE_CREDS }}
 
       - name: Run scraper
-        run: python scraper.py   # ✅ fix this if file not in root
+        run: python scraper.py
+
+      - name: Show log file (always, even on failure)
+        if: always()
+        run: cat scraper.log || echo "No scraper.log found"
