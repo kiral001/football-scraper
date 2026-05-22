@@ -2,33 +2,32 @@ name: Run Scraper
 
 on:
   schedule:
-    - cron: "0 1 * * *"  # ✅ 08:00 WIB (UTC+7)
-  workflow_dispatch:     # ✅ manual button
+    - cron: "0 1 * * *"
+  workflow_dispatch:
 
 jobs:
   run-script:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
+      - name: Debug files
+        run: ls -R   # ✅ shows file structure
 
-      - name: Install Chrome
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y chromium-browser
+      - run: pip install -r requirements.txt
 
-      - name: Run scraper
+      - uses: browser-actions/setup-chrome@v1
+      - uses: nanasess/setup-chromedriver@v2
+
+      - name: Create credentials.json
+        run: echo "$GOOGLE_CREDS" > credentials.json
         env:
           GOOGLE_CREDS: ${{ secrets.GOOGLE_CREDS }}
-        run: |
-          python scraper.py
+
+      - name: Run scraper
+        run: python scraper.py   # ✅ fix this if file not in root
