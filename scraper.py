@@ -156,8 +156,8 @@ def get_data():
     driver = get_driver()
 
     competitions = {
-        "Premier League": "https://onefootball.com/en/competition/premier-league-9/fixtures",
-        "LaLiga": "https://onefootball.com/en/competition/laliga-10/fixtures"
+        "UCL": "https://onefootball.com/en/competition/uefa-champions-league-5/fixtures",
+        "UECL": "https://onefootball.com/en/competition/uefa-conference-league-2762/fixtures"
     }
 
     all_data = []
