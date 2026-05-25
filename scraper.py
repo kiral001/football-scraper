@@ -150,8 +150,8 @@ def normalize_date(d):
 def get_data():
     driver = get_driver()
     competitions = {
-        "Premier League": "https://onefootball.com/en/competition/premier-league-9/fixtures",
-        "LaLiga": "https://onefootball.com/en/competition/laliga-10/fixtures"
+        "Piala Melon": "https://onefootball.com/en/competition/uefa-champions-league-5/fixtures",
+        "UCL": "https://onefootball.com/en/competition/uefa-champions-league-5/fixtures"
     }
     all_data = []
     for name, url in competitions.items():
