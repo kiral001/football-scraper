@@ -22,12 +22,6 @@ CREDENTIALS_PATH = os.path.join(BASE_DIR, "credentials.json")
 LOG_PATH = os.path.join(BASE_DIR, "scraper.log")
 # ==============================
 # ✅ TIMEZONE — ROOT CAUSE #1
-# OneFootball renders times in the browser's local timezone.
-# Headless Chrome has NO timezone by default, so it falls back to
-# whatever the OS has — which changes per environment/run.
-# We fix this by hardcoding WIB (UTC+7) in two places:
-#   1. Chrome's --lang and timezone CDP command (forces the JS Date object)
-#   2. Our own ISO datetime parser (converts UTC → WIB deterministically)
 # ==============================
 WIB = timezone(timedelta(hours=7))  # Asia/Jakarta
 # ==============================
@@ -51,19 +45,13 @@ def get_driver():
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
-    # ROOT CAUSE FIX #1: force browser language/locale
-    # This makes JS Intl and Date.toLocaleString() behave consistently
     options.add_argument("--lang=en-US")
-    # Disable images for speed
     prefs = {"profile.managed_default_content_settings.images": 2}
     options.add_experimental_option("prefs", prefs)
     driver = webdriver.Chrome(
         service=Service(ChromeDriverManager().install()),
         options=options
     )
-    # ROOT CAUSE FIX #2: set timezone via Chrome DevTools Protocol
-    # This overrides the OS timezone inside the browser's JS engine
-    # so Date objects always produce consistent UTC+7 output
     driver.execute_cdp_cmd(
         "Emulation.setTimezoneOverride",
         {"timezoneId": "Asia/Jakarta"}
@@ -71,16 +59,11 @@ def get_driver():
     return driver
 # ==============================
 # ✅ ISO DATETIME PARSER
-# ROOT CAUSE FIX #3: read the raw UTC ISO string from the <time datetime="">
-# attribute and convert it to WIB ourselves.
-# This is 100% deterministic — no reliance on browser rendering or JS.
-# Example: "2025-05-28T19:00:00Z" → "02:00" (WIB = UTC+7)
 # ==============================
 def iso_to_wib_time(iso_str):
     """Convert ISO 8601 UTC string to HH:MM in WIB (UTC+7)."""
     if not iso_str:
         return None
-    # Handle formats: 2025-05-28T19:00:00Z  or  2025-05-28T19:00:00+00:00
     iso_str = iso_str.strip().replace("Z", "+00:00")
     try:
         dt_utc = datetime.fromisoformat(iso_str)
@@ -88,6 +71,7 @@ def iso_to_wib_time(iso_str):
         return dt_wib.strftime("%H:%M")
     except Exception:
         return None
+
 def iso_to_wib_date(iso_str):
     """Convert ISO 8601 UTC string to DD/MM/YYYY in WIB (UTC+7)."""
     if not iso_str:
@@ -113,14 +97,6 @@ def is_valid_match_time(text):
 # ✅ TIME EXTRACTION — all strategies in order
 # ==============================
 def extract_time_from_card(match_element):
-    """
-    Extract kickoff time from a match card anchor element.
-    Priority order:
-    1. <time datetime="ISO_STRING"> — parse UTC directly, convert to WIB
-       This bypasses JS rendering entirely. Most reliable.
-    2. data-testid="match-kickoff-time" or similar test IDs
-    3. Visible text matching HH:MM with valid clock range
-    """
     # ── Strategy 1: <time datetime="..."> ISO attribute ──────────────────
     try:
         time_tags = match_element.find_elements(By.XPATH, ".//time[@datetime]")
@@ -176,12 +152,6 @@ def extract_time_from_card(match_element):
 # ✅ DATE EXTRACTION from card
 # ==============================
 def extract_date_from_card(match_element, text_lines):
-    """
-    Extract match date. Priority:
-    1. <time datetime="ISO"> — convert UTC to WIB date
-    2. Text line matching DD/MM/YYYY
-    3. Text line matching relative words (today/tomorrow)
-    """
     # Strategy 1: ISO datetime attribute
     try:
         time_tags = match_element.find_elements(By.XPATH, ".//time[@datetime]")
@@ -238,7 +208,6 @@ def parse_match_card(match):
         return None
 # ==============================
 # ✅ SCRAPE — with proper lazy-load wait
-# ROOT CAUSE FIX #4: OneFootball uses a virtualized list.
 # ==============================
 def scrape_competition(driver, name, url):
     logging.info(f"Scraping {name} → {url}")
@@ -379,6 +348,23 @@ def add_club_classification(df: pd.DataFrame) -> pd.DataFrame:
     logging.info("Club classification columns added.")
     return df
 # ==============================
+# ✅ CLASSIFY MATCH TYPE
+# ==============================
+def add_match_type(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add Match Type column.
+    'Big Match'     — both Home Club Type AND Away Club Type are 'Big Club'
+    'Non Big Match' — any other combination
+    """
+    df["Match Type"] = df.apply(
+        lambda row: "Big Match"
+        if row["Home Club Type"] == "Big Club" and row["Away Club Type"] == "Big Club"
+        else "Non Big Match",
+        axis=1
+    )
+    logging.info("Match type column added.")
+    return df
+# ==============================
 # ✅ GOOGLE SHEETS
 # ==============================
 def upload_to_sheets(df):
@@ -405,7 +391,8 @@ def safe_run(max_retries=3):
             df = get_data()
             if not df.empty:
                 df = merge_logos(df)
-                df = add_club_classification(df)   # ← NEW: classify Big/Small Club
+                df = add_club_classification(df)   # ← classify Big/Small Club
+                df = add_match_type(df)            # ← classify Big Match / Non Big Match
                 upload_to_sheets(df)
                 logging.info(f"✅ SUCCESS on attempt {attempt}")
                 return
