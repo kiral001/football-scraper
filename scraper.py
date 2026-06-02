@@ -329,7 +329,6 @@ def merge_logos(df):
 # ==============================
 BIG_CLUBS = {
     "argentina",
-"austria",
 "brazil",
 "croatia",
 "england",
