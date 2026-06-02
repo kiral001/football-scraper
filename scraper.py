@@ -302,7 +302,7 @@ def get_data():
 def merge_logos(df):
     logo_url = (
         "https://docs.google.com/spreadsheets/d/"
-        "1BLZ-YDZJqwk1LcSQ79bDOGcdue1OwdG4jrrXjSh6vKs"
+        "1wZ2VUxoLOajn6xC8YVp5vplIBo4o4stmqUpfm6VVs70"
         "/gviz/tq?tqx=out:csv"
     )
     try:
@@ -328,12 +328,19 @@ def merge_logos(df):
 # ✅ CLASSIFY CLUB SIZE
 # ==============================
 BIG_CLUBS = {
-    "real madrid", "barcelona", "atletico madrid",
-    "arsenal", "chelsea", "tottenham", "manchester united",
-    "manchester city", "liverpool",
-    "inter milan", "ac milan", "a. c milan", "napoli", "juventus",
-    "bayern munich", "bayern munchen",
-    "psg", "paris saint-germain"
+    "argentina",
+"austria",
+"brazil",
+"croatia",
+"england",
+"france",
+"germany",
+"japan",
+"netherlands",
+"portugal",
+"senegal",
+"spain",
+"uruguay"
 }
 
 def classify_club(team_name: str) -> str:
