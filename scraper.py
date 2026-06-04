@@ -80,7 +80,7 @@ def iso_to_wib_date(iso_str):
     try:
         dt_utc = datetime.fromisoformat(iso_str)
         dt_wib = dt_utc.astimezone(WIB)
-        return dt_wib.strftime("%d/%m/%Y")
+        return dt_wib.strftime("%m/%d/%Y")
     except Exception:
         return None
 # ==============================
