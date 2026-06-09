@@ -295,6 +295,14 @@ def get_data():
     df = df[df["Time"].apply(is_valid_match_time)]
     after = len(df)
     logging.info(f"Time filter: kept {after} of {before} rows")
+    # ── ✅ NEW: combine Date + Time into MatchTime datetime column ────────
+    df["MatchTime"] = pd.to_datetime(
+        df["Date"] + " " + df["Time"],
+        format="%m/%d/%Y %H:%M",
+        errors="coerce"
+    ).dt.strftime("%m/%d/%Y %H:%M")
+    logging.info("MatchTime column added.")
+    # ─────────────────────────────────────────────────────────────────────
     return df
 # ==============================
 # ✅ MERGE LOGOS
@@ -396,8 +404,8 @@ def safe_run(max_retries=3):
             df = get_data()
             if not df.empty:
                 df = merge_logos(df)
-                df = add_club_classification(df)   # ← classify Big/Small Club
-                df = add_match_type(df)            # ← classify Big Match / Non Big Match
+                df = add_club_classification(df)
+                df = add_match_type(df)
                 upload_to_sheets(df)
                 logging.info(f"✅ SUCCESS on attempt {attempt}")
                 return
