@@ -3,6 +3,7 @@ import os
 import time
 import re
 import logging
+import requests
 from datetime import date, timedelta, timezone, datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -14,6 +15,13 @@ from selenium.common.exceptions import TimeoutException, StaleElementReferenceEx
 from webdriver_manager.chrome import ChromeDriverManager
 import gspread
 from google.oauth2.service_account import Credentials
+
+# ==============================
+# ✅ AIRTABLE CONFIG
+# ==============================
+AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")
+BASE_ID = "your_base_id"
+TABLE_NAME = "your_table_name"
 
 # ==============================
 # ✅ PATHS
@@ -67,7 +75,7 @@ def get_driver():
     return driver
 
 # ==============================
-# ✅ ISO DATETIME PARSER
+# ✅ ISO PARSER
 # ==============================
 def iso_to_wib_time(iso_str):
     if not iso_str:
@@ -90,7 +98,7 @@ def iso_to_wib_date(iso_str):
         return None
 
 # ==============================
-# ✅ TIME VALIDATOR
+# ✅ VALIDATOR
 # ==============================
 def is_valid_match_time(text):
     text = str(text).strip()
@@ -100,67 +108,7 @@ def is_valid_match_time(text):
     return 0 <= hh <= 23 and 0 <= mm <= 59
 
 # ==============================
-# ✅ TIME EXTRACTION
-# ==============================
-def extract_time_from_card(match_element):
-    try:
-        for el in match_element.find_elements(By.XPATH, ".//time[@datetime]"):
-            dt = el.get_attribute("datetime") or ""
-            if "T" in dt:
-                t = iso_to_wib_time(dt)
-                if t:
-                    return t
-    except:
-        pass
-
-    try:
-        for testid in ["match-kickoff-time", "kickoff-time", "match-time", "fixture-time"]:
-            for el in match_element.find_elements(By.XPATH, f".//*[@data-testid='{testid}']"):
-                t = el.text.strip()
-                if is_valid_match_time(t):
-                    return t
-    except:
-        pass
-
-    try:
-        label = match_element.get_attribute("aria-label") or ""
-        t = re.search(r"\b(\d{2}:\d{2})\b", label)
-        if t:
-            return t.group(1)
-    except:
-        pass
-
-    return "Unknown"
-
-# ==============================
-# ✅ DATE EXTRACTION
-# ==============================
-def extract_date_from_card(match_element, text_lines):
-    try:
-        for el in match_element.find_elements(By.XPATH, ".//time[@datetime]"):
-            dt = el.get_attribute("datetime") or ""
-            if "T" in dt:
-                d = iso_to_wib_date(dt)
-                if d:
-                    return d
-    except:
-        pass
-
-    for l in text_lines:
-        if re.match(r"^\d{2}/\d{2}/\d{4}$", l):
-            return l
-
-    today = date.today()
-    for l in text_lines:
-        if l.lower() == "today":
-            return today.strftime("%d/%m/%Y")
-        elif l.lower() == "tomorrow":
-            return (today + timedelta(days=1)).strftime("%d/%m/%Y")
-
-    return "Unknown"
-
-# ==============================
-# ✅ PARSER (✅ FILTER ADDED HERE ONLY)
+# ✅ PARSER (with filter)
 # ==============================
 def parse_match_card(match):
     try:
@@ -178,11 +126,7 @@ def parse_match_card(match):
             "winner", "loser", "group"
         ]
 
-        # ✅ FILTER BOTH HOME & AWAY
         if any(kw in home.lower() or kw in away.lower() for kw in skip_keywords):
-            return None
-
-        if len(home) < 2 or len(away) < 2:
             return None
 
         return {
@@ -254,8 +198,38 @@ def get_data():
     return df
 
 # ==============================
+# ✅ AIRTABLE UPDATE FUNCTION
+# ==============================
+def update_airtable(df):
+    url = f"https://api.airtable.com/v0/{schedule}/{Sheet1}"
+
+    headers = {
+        "Authorization": f"Bearer {AIRTABLE_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    for _, row in df.iterrows():
+        data = {
+            "fields": {
+                "Home Team": row["Home Team"],
+                "Away Team": row["Away Team"],
+                "Date": row["Date"],
+                "Time": row["Time"]
+            }
+        }
+
+        response = requests.post(url, json=data, headers=headers)
+
+        if response.status_code != 200:
+            logging.warning(f"Airtable error: {response.text}")
+
+# ==============================
 # ✅ MAIN
 # ==============================
 if __name__ == "__main__":
     df = get_data()
+
     print(df)
+
+    if not df.empty:
+        update_airtable(df)
