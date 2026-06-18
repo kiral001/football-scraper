@@ -32,8 +32,11 @@ jobs:
         env:
           GOOGLE_CREDS: ${{ secrets.GOOGLE_CREDS }}
 
+
       - name: Run scraper
+        env: AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
         run: python scraper.py
+
 
       - name: Show log file
         if: always()
