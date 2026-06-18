@@ -25,7 +25,7 @@ LOG_PATH = os.path.join(BASE_DIR, "scraper.log")
 
 AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")
 AIRTABLE_BASE_ID = "appgs6fF2J7EaPV34"
-AIRTABLE_TABLE_NAME = "schedule"
+AIRTABLE_TABLE_NAME = "fixture"
 
 # ==============================
 # ✅ TIMEZONE
