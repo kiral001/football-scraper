@@ -17,18 +17,15 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # ==============================
-# ✅ AIRTABLE CONFIG
-# ==============================
-AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")
-BASE_ID = "appgs6fF2J7EaPV34"
-TABLE_NAME = "Sheet1"
-
-# ==============================
-# ✅ PATHS
+# ✅ PATHS & ENV
 # ==============================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CREDENTIALS_PATH = os.path.join(BASE_DIR, "credentials.json")
 LOG_PATH = os.path.join(BASE_DIR, "scraper.log")
+
+AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")
+AIRTABLE_BASE_ID = "appgs6fF2J7EaPV34"
+AIRTABLE_TABLE_NAME = "schedule"
 
 # ==============================
 # ✅ TIMEZONE
@@ -53,14 +50,9 @@ logging.getLogger().addHandler(console)
 def get_driver():
     options = Options()
     options.add_argument("--headless=new")
-    options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
-    options.add_argument("--lang=en-US")
-
-    prefs = {"profile.managed_default_content_settings.images": 2}
-    options.add_experimental_option("prefs", prefs)
 
     driver = webdriver.Chrome(
         service=Service(ChromeDriverManager().install()),
@@ -71,71 +63,77 @@ def get_driver():
         "Emulation.setTimezoneOverride",
         {"timezoneId": "Asia/Jakarta"}
     )
-
     return driver
 
 # ==============================
-# ✅ ISO PARSER
+# ✅ TIME PARSER
 # ==============================
 def iso_to_wib_time(iso_str):
     if not iso_str:
         return None
-    iso_str = iso_str.strip().replace("Z", "+00:00")
+    iso_str = iso_str.replace("Z", "+00:00")
     try:
-        dt_utc = datetime.fromisoformat(iso_str)
-        return dt_utc.astimezone(WIB).strftime("%H:%M")
+        dt = datetime.fromisoformat(iso_str)
+        return dt.astimezone(WIB).strftime("%H:%M")
     except:
         return None
 
 def iso_to_wib_date(iso_str):
     if not iso_str:
         return None
-    iso_str = iso_str.strip().replace("Z", "+00:00")
+    iso_str = iso_str.replace("Z", "+00:00")
     try:
-        dt_utc = datetime.fromisoformat(iso_str)
-        return dt_utc.astimezone(WIB).strftime("%m/%d/%Y")
+        dt = datetime.fromisoformat(iso_str)
+        return dt.astimezone(WIB).strftime("%d/%m/%Y")
     except:
         return None
 
-# ==============================
-# ✅ VALIDATOR
-# ==============================
 def is_valid_match_time(text):
-    text = str(text).strip()
-    if not re.fullmatch(r"\d{2}:\d{2}", text):
+    if not re.fullmatch(r"\d{2}:\d{2}", str(text)):
         return False
     hh, mm = int(text[:2]), int(text[3:])
     return 0 <= hh <= 23 and 0 <= mm <= 59
 
 # ==============================
-# ✅ PARSER (with filter)
+# ✅ EXTRACTORS
+# ==============================
+def extract_time_from_card(match):
+    try:
+        time_tags = match.find_elements(By.XPATH, ".//time[@datetime]")
+        for el in time_tags:
+            t = iso_to_wib_time(el.get_attribute("datetime"))
+            if t:
+                return t
+    except:
+        pass
+    return "Unknown"
+
+def extract_date_from_card(match):
+    try:
+        time_tags = match.find_elements(By.XPATH, ".//time[@datetime]")
+        for el in time_tags:
+            d = iso_to_wib_date(el.get_attribute("datetime"))
+            if d:
+                return d
+    except:
+        pass
+    return "Unknown"
+
+# ==============================
+# ✅ PARSER
 # ==============================
 def parse_match_card(match):
     try:
-        text = match.text.strip()
-        lines = [l.strip() for l in text.split("\n") if l.strip()]
-
+        lines = [l.strip() for l in match.text.split("\n") if l.strip()]
         if len(lines) < 2:
             return None
 
-        home = lines[0]
-        away = lines[1]
-
-        skip_keywords = [
-            "advertisement", "sign in", "follow", "subscribe", "download",
-            "winner", "loser", "group"
-        ]
-
-        if any(kw in home.lower() or kw in away.lower() for kw in skip_keywords):
-            return None
-
         return {
-            "Home Team": home,
-            "Away Team": away,
-            "Date": extract_date_from_card(match, lines),
+            "Home Team": lines[0],
+            "Away Team": lines[1],
+            "Date": extract_date_from_card(match),
             "Time": extract_time_from_card(match)
         }
-
     except:
         return None
 
@@ -145,33 +143,27 @@ def parse_match_card(match):
 def scrape_competition(driver, name, url):
     driver.get(url)
 
-    WebDriverWait(driver, 30).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/match/']"))
-    )
+    try:
+        WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/match/']"))
+        )
+    except TimeoutException:
+        return []
 
     time.sleep(3)
 
-    for _ in range(20):
+    for _ in range(15):
         driver.execute_script("window.scrollBy(0, 800)")
         time.sleep(2)
 
     matches = driver.find_elements(By.CSS_SELECTOR, "a[href*='/match/']")
 
     results = []
-    seen = set()
-
     for m in matches:
         parsed = parse_match_card(m)
-        if not parsed:
-            continue
-
-        key = (parsed["Home Team"], parsed["Away Team"], parsed["Date"])
-        if key in seen:
-            continue
-
-        seen.add(key)
-        parsed["Competition"] = name
-        results.append(parsed)
+        if parsed:
+            parsed["Competition"] = name
+            results.append(parsed)
 
     return results
 
@@ -181,55 +173,107 @@ def scrape_competition(driver, name, url):
 def get_data():
     driver = get_driver()
 
-    data = scrape_competition(
-        driver,
-        "World Cup",
-        "https://onefootball.com/en/competition/fifa-world-cup-12/fixtures"
-    )
+    competitions = {
+        "UCL": "https://onefootball.com/en/competition/uefa-champions-league-5/fixtures",
+        "UECL": "https://onefootball.com/en/competition/uefa-conference-league-2762/fixtures",
+    }
+
+    all_data = []
+    for name, url in competitions.items():
+        all_data.extend(scrape_competition(driver, name, url))
 
     driver.quit()
 
-    if not data:
-        return pd.DataFrame()
+    df = pd.DataFrame(all_data)
 
-    df = pd.DataFrame(data)
     df = df[df["Time"].apply(is_valid_match_time)]
 
     return df
 
 # ==============================
-# ✅ AIRTABLE UPDATE FUNCTION
+# ✅ GOOGLE SHEETS
 # ==============================
-def update_airtable(df):
-    url = f"https://api.airtable.com/v0/{appgs6fF2J7EaPV34appgs6fF2J7EaPV34}/{Sheet1}"
+def upload_to_sheets(df):
+    scope = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
 
-    headers = {
+    creds = Credentials.from_service_account_file(CREDENTIALS_PATH, scopes=scope)
+    client = gspread.authorize(creds)
+
+    sheet = client.open_by_url(
+        "https://docs.google.com/spreadsheets/d/1BhPU_hskjdgmuSHBcmoPhGxtUscpRLCRed_DITIIOq4/"
+    )
+
+    ws = sheet.sheet1
+    ws.clear()
+
+    df = df.fillna("").astype(str)
+    ws.update([df.columns.tolist()] + df.values.tolist())
+
+# ==============================
+# ✅ AIRTABLE
+# ==============================
+def airtable_headers():
+    return {
         "Authorization": f"Bearer {AIRTABLE_API_KEY}",
         "Content-Type": "application/json"
     }
 
+def clear_airtable():
+    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
+
+    while True:
+        res = requests.get(url, headers=airtable_headers()).json()
+        records = res.get("records", [])
+
+        if not records:
+            break
+
+        ids = [r["id"] for r in records]
+
+        requests.delete(
+            url,
+            headers=airtable_headers(),
+            params={"records[]": ids}
+        )
+
+def upload_to_airtable(df):
+    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
+
+    records = []
     for _, row in df.iterrows():
-        data = {
+        records.append({
             "fields": {
                 "Home Team": row["Home Team"],
                 "Away Team": row["Away Team"],
                 "Date": row["Date"],
-                "Time": row["Time"]
+                "Time": row["Time"],
+                "Competition": row["Competition"]
             }
-        }
+        })
 
-        response = requests.post(url, json=data, headers=headers)
-
-        if response.status_code != 200:
-            logging.warning(f"Airtable error: {response.text}")
+    for i in range(0, len(records), 10):
+        batch = records[i:i+10]
+        requests.post(url, json={"records": batch}, headers=airtable_headers())
 
 # ==============================
 # ✅ MAIN
 # ==============================
-if __name__ == "__main__":
+def run():
     df = get_data()
 
-    print(df)
+    if df.empty:
+        logging.warning("No data")
+        return
 
-    if not df.empty:
-        update_airtable(df)
+    upload_to_sheets(df)
+
+    clear_airtable()
+    upload_to_airtable(df)
+
+    logging.info("SUCCESS")
+
+if __name__ == "__main__":
+    run()
