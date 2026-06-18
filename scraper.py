@@ -20,8 +20,8 @@ from google.oauth2.service_account import Credentials
 # ✅ AIRTABLE CONFIG
 # ==============================
 AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")
-BASE_ID = "your_base_id"
-TABLE_NAME = "your_table_name"
+BASE_ID = "appgs6fF2J7EaPV34"
+TABLE_NAME = "Sheet1"
 
 # ==============================
 # ✅ PATHS
@@ -201,7 +201,7 @@ def get_data():
 # ✅ AIRTABLE UPDATE FUNCTION
 # ==============================
 def update_airtable(df):
-    url = f"https://api.airtable.com/v0/{schedule}/{Sheet1}"
+    url = f"https://api.airtable.com/v0/{appgs6fF2J7EaPV34appgs6fF2J7EaPV34}/{Sheet1}"
 
     headers = {
         "Authorization": f"Bearer {AIRTABLE_API_KEY}",
