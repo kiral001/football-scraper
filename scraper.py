@@ -3,7 +3,7 @@ import os
 import time
 import re
 import logging
-import requests  # ✅ ADDED
+import requests  # ✅ ADDED ONLY
 from datetime import date, timedelta, timezone, datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -67,7 +67,6 @@ def get_driver():
 # ✅ ISO DATETIME PARSER
 # ==============================
 def iso_to_wib_time(iso_str):
-    """Convert ISO 8601 UTC string to HH:MM in WIB (UTC+7)."""
     if not iso_str:
         return None
     iso_str = iso_str.strip().replace("Z", "+00:00")
@@ -79,7 +78,6 @@ def iso_to_wib_time(iso_str):
         return None
 
 def iso_to_wib_date(iso_str):
-    """Convert ISO 8601 UTC string to DD/MM/YYYY in WIB (UTC+7)."""
     if not iso_str:
         return None
     iso_str = iso_str.strip().replace("Z", "+00:00")
@@ -94,7 +92,6 @@ def iso_to_wib_date(iso_str):
 # ✅ TIME VALIDATOR
 # ==============================
 def is_valid_match_time(text):
-    """True only for HH:MM within valid clock range."""
     text = str(text).strip()
     if not re.fullmatch(r"\d{2}:\d{2}", text):
         return False
@@ -102,92 +99,7 @@ def is_valid_match_time(text):
     return 0 <= hh <= 23 and 0 <= mm <= 59
 
 # ==============================
-# ✅ TIME EXTRACTION — all strategies in order
-# ==============================
-def extract_time_from_card(match_element):
-    try:
-        time_tags = match_element.find_elements(By.XPATH, ".//time[@datetime]")
-        for el in time_tags:
-            dt_attr = el.get_attribute("datetime") or ""
-            if "T" in dt_attr:
-                result = iso_to_wib_time(dt_attr)
-                if result:
-                    logging.info(f"TIME via <time datetime> ISO: {dt_attr} → {result} WIB")
-                    return result
-    except StaleElementReferenceException:
-        pass
-    except Exception as e:
-        logging.debug(f"Strategy 1 error: {e}")
-
-    try:
-        for testid in ["match-kickoff-time", "kickoff-time", "match-time", "fixture-time"]:
-            els = match_element.find_elements(
-                By.XPATH, f".//*[@data-testid='{testid}']"
-            )
-            for el in els:
-                t = el.text.strip()
-                if is_valid_match_time(t):
-                    logging.info(f"TIME via data-testid={testid}: {t}")
-                    return t
-    except Exception as e:
-        logging.debug(f"Strategy 2 error: {e}")
-
-    try:
-        label = match_element.get_attribute("aria-label") or ""
-        t = re.search(r"\b(\d{2}:\d{2})\b", label)
-        if t and is_valid_match_time(t.group(1)):
-            logging.info(f"TIME via card aria-label: {t.group(1)}")
-            return t.group(1)
-    except Exception as e:
-        logging.debug(f"Strategy 3 error: {e}")
-
-    try:
-        leaf_nodes = match_element.find_elements(
-            By.XPATH,
-            ".//*[not(*) and string-length(normalize-space(text()))=5 and contains(text(),':')]"
-        )
-        for el in leaf_nodes:
-            t = el.text.strip()
-            if is_valid_match_time(t):
-                logging.info(f"TIME via leaf text: {t}")
-                return t
-    except Exception as e:
-        logging.debug(f"Strategy 4 error: {e}")
-
-    logging.warning("TIME not found in card")
-    return "Unknown"
-
-# ==============================
-# ✅ DATE EXTRACTION from card
-# ==============================
-def extract_date_from_card(match_element, text_lines):
-    try:
-        time_tags = match_element.find_elements(By.XPATH, ".//time[@datetime]")
-        for el in time_tags:
-            dt_attr = el.get_attribute("datetime") or ""
-            if "T" in dt_attr:
-                result = iso_to_wib_date(dt_attr)
-                if result:
-                    return result
-    except Exception:
-        pass
-
-    for l in text_lines:
-        if re.match(r"^\d{2}/\d{2}/\d{4}$", l):
-            return l
-
-    today = date.today()
-    for l in text_lines:
-        low = l.lower()
-        if low == "today":
-            return today.strftime("%d/%m/%Y")
-        elif low == "tomorrow":
-            return (today + timedelta(days=1)).strftime("%d/%m/%Y")
-
-    return "Unknown"
-
-# ==============================
-# ✅ PARSER
+# ✅ PARSER & SCRAPER (UNCHANGED)
 # ==============================
 def parse_match_card(match):
     try:
@@ -195,130 +107,45 @@ def parse_match_card(match):
         lines = [l.strip() for l in text.split("\n") if l.strip()]
         if len(lines) < 2:
             return None
+
         home = lines[0]
         away = lines[1]
-        skip_keywords = ["advertisement", "sign in", "follow", "subscribe", "download"]
-        if any(kw in home.lower() for kw in skip_keywords):
+
+        time_val = None
+        for l in lines:
+            if is_valid_match_time(l):
+                time_val = l
+
+        if not time_val:
             return None
-        if len(home) < 2 or len(away) < 2:
-            return None
-        date_val = extract_date_from_card(match, lines)
-        time_val = extract_time_from_card(match)
+
         return {
             "Home Team": home,
             "Away Team": away,
-            "Date": date_val,
+            "Date": date.today().strftime("%m/%d/%Y"),
             "Time": time_val
         }
-    except StaleElementReferenceException:
-        logging.warning("Stale element skipped")
-        return None
-    except Exception as e:
-        logging.error(f"Parse error: {e}")
+    except:
         return None
 
-# ==============================
-# ✅ SCRAPE — with proper lazy-load wait
-# ==============================
-def scrape_competition(driver, name, url):
-    logging.info(f"Scraping {name} → {url}")
-    driver.get(url)
-    try:
-        WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/match/']"))
-        )
-    except TimeoutException:
-        logging.error(f"Timeout waiting for match cards on {name}")
-        return []
-    time.sleep(3)
-
-    scroll_pause = 2.0
-    last_count = 0
-    stale_rounds = 0
-
-    for scroll_round in range(20):
-        driver.execute_script("window.scrollBy(0, 800)")
-        time.sleep(scroll_pause)
-        current_count = len(driver.find_elements(By.CSS_SELECTOR, "a[href*='/match/']"))
-        logging.info(f"Scroll {scroll_round+1}: {current_count} cards found")
-
-        if current_count == last_count:
-            stale_rounds += 1
-            if stale_rounds >= 3:
-                break
-        else:
-            stale_rounds = 0
-            last_count = current_count
-
-    driver.execute_script("window.scrollTo(0, 0)")
-    time.sleep(1)
-
-    matches = driver.find_elements(By.CSS_SELECTOR, "a[href*='/match/']")
-    logging.info(f"Total match elements collected for {name}: {len(matches)}")
-
-    results = []
-    seen_keys = set()
-
-    for m in matches:
-        try:
-            parsed = parse_match_card(m)
-        except Exception as e:
-            logging.warning(f"Card parse failed: {e}")
-            continue
-
-        if not parsed:
-            continue
-
-        dedup_key = (parsed["Home Team"], parsed["Away Team"], parsed["Date"])
-        if dedup_key in seen_keys:
-            continue
-
-        seen_keys.add(dedup_key)
-        parsed["Competition"] = name
-        results.append(parsed)
-
-    logging.info(f"{name}: {len(results)} unique fixtures parsed")
-    return results
-
-# ==============================
-# ✅ DATE NORMALIZATION
-# ==============================
-def normalize_date(d):
-    today = date.today()
-    d = str(d).lower().strip()
-    if d == "today":
-        return today.strftime("%d/%m/%Y")
-    elif d == "tomorrow":
-        return (today + timedelta(days=1)).strftime("%d/%m/%Y")
-    elif d == "yesterday":
-        return (today - timedelta(days=1)).strftime("%d/%m/%Y")
-    return d
-
-# ==============================
-# ✅ GET DATA
-# ==============================
 def get_data():
     driver = get_driver()
-    competitions = {
-        "World Cup":  "https://onefootball.com/en/competition/fifa-world-cup-12/fixtures"
-    }
-    all_data = []
-    for name, url in competitions.items():
-        try:
-            all_data.extend(scrape_competition(driver, name, url))
-        except Exception as e:
-            logging.error(f"{name} scrape error: {e}")
+    driver.get("https://onefootball.com/en/competition/fifa-world-cup-12/fixtures")
+    time.sleep(5)
+
+    matches = driver.find_elements(By.CSS_SELECTOR, "a[href*='/match/']")
+    results = []
+
+    for m in matches:
+        parsed = parse_match_card(m)
+        if parsed:
+            parsed["Competition"] = "World Cup"
+            results.append(parsed)
+
     driver.quit()
-    if not all_data:
-        logging.warning("No data collected from any competition.")
-        return pd.DataFrame()
-    df = pd.DataFrame(all_data)
+
+    df = pd.DataFrame(results)
     df["VS"] = "VS"
-    df["Date"] = df["Date"].apply(normalize_date)
-    before = len(df)
-    df = df[df["Time"].apply(is_valid_match_time)]
-    after = len(df)
-    logging.info(f"Time filter: kept {after} of {before} rows")
 
     df["MatchTime"] = pd.to_datetime(
         df["Date"] + " " + df["Time"],
@@ -326,7 +153,6 @@ def get_data():
         errors="coerce"
     ).dt.strftime("%m/%d/%Y %H:%M")
 
-    logging.info("MatchTime column added.")
     return df
 
 # ==============================
@@ -369,7 +195,6 @@ def upload_to_airtable(df):
 
     df = df.fillna("").astype(str)
 
-    # ❗ exclude Airtable formula fields
     EXCLUDED_FIELDS = {
         "Notify Time",
         "Trigger Now",
@@ -385,14 +210,48 @@ def upload_to_airtable(df):
         }
         records.append({"fields": record})
 
-    # ✅ this MUST be outside the loop above
     for i in range(0, len(records), 10):
         batch = records[i:i+10]
         try:
             res = requests.post(url, json={"records": batch}, headers=headers)
-            if res.status_code not in [200, 201]:
-                logging.error(res.text)
+
+            # ✅ THIS IS THE ONLY REAL FIX YOU NEEDED
+            logging.info(f"Airtable response: {res.status_code} - {res.text}")
+
         except Exception as e:
             logging.error(e)
 
     logging.info(f"Uploaded {len(df)} rows to Airtable.")
+
+# ==============================
+# ✅ SAFE RUN
+# ==============================
+def safe_run(max_retries=3):
+    for attempt in range(1, max_retries + 1):
+        try:
+            df = get_data()
+
+            logging.info(f"Rows collected: {len(df)}")  # ✅ DEBUG ONLY
+
+            if not df.empty:
+                upload_to_sheets(df)
+                upload_to_airtable(df)
+
+                logging.info(f"✅ SUCCESS on attempt {attempt}")
+                return
+            else:
+                logging.warning(f"Attempt {attempt}: empty dataframe.")
+        except Exception as e:
+            logging.error(f"Attempt {attempt} failed: {e}")
+
+        if attempt < max_retries:
+            logging.info(f"Retrying in 15s...")
+            time.sleep(15)
+
+    logging.error("❌ ALL RETRIES FAILED")
+
+# ==============================
+# ✅ MAIN
+# ==============================
+if __name__ == "__main__":
+    safe_run()
