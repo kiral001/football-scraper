@@ -369,22 +369,23 @@ def upload_to_airtable(df):
 
     df = df.fillna("").astype(str)
 
-   # ❗ exclude Airtable formula fields
-EXCLUDED_FIELDS = {
-    "Notify Time",
-    "Trigger Now",
-    "Notification Sent",
-    "Ready to Notify"
-}
-
-records = []
-for _, row in df.iterrows():
-    record = {
-        k: v for k, v in row.to_dict().items()
-        if k not in EXCLUDED_FIELDS
+    # ❗ exclude Airtable formula fields
+    EXCLUDED_FIELDS = {
+        "Notify Time",
+        "Trigger Now",
+        "Notification Sent",
+        "Ready to Notify"
     }
-    records.append({"fields": record})
 
+    records = []
+    for _, row in df.iterrows():
+        record = {
+            k: v for k, v in row.to_dict().items()
+            if k not in EXCLUDED_FIELDS
+        }
+        records.append({"fields": record})
+
+    # ✅ this MUST be outside the loop above
     for i in range(0, len(records), 10):
         batch = records[i:i+10]
         try:
@@ -395,30 +396,3 @@ for _, row in df.iterrows():
             logging.error(e)
 
     logging.info(f"Uploaded {len(df)} rows to Airtable.")
-
-# ==============================
-# ✅ SAFE RUN
-# ==============================
-def safe_run(max_retries=3):
-    for attempt in range(1, max_retries + 1):
-        try:
-            df = get_data()
-            if not df.empty:
-                upload_to_sheets(df)
-                upload_to_airtable(df)  # ✅ ADDED LINE ONLY
-                logging.info(f"✅ SUCCESS on attempt {attempt}")
-                return
-            else:
-                logging.warning(f"Attempt {attempt}: empty dataframe.")
-        except Exception as e:
-            logging.error(f"Attempt {attempt} failed: {e}")
-        if attempt < max_retries:
-            logging.info(f"Retrying in 15s...")
-            time.sleep(15)
-    logging.error("❌ ALL RETRIES FAILED")
-
-# ==============================
-# ✅ MAIN
-# ==============================
-if __name__ == "__main__":
-    safe_run()
