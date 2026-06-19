@@ -369,7 +369,21 @@ def upload_to_airtable(df):
 
     df = df.fillna("").astype(str)
 
-    records = [{"fields": row.to_dict()} for _, row in df.iterrows()]
+   # ❗ exclude Airtable formula fields
+EXCLUDED_FIELDS = {
+    "Notify Time",
+    "Trigger Now",
+    "Notification Sent",
+    "Ready to Notify"
+}
+
+records = []
+for _, row in df.iterrows():
+    record = {
+        k: v for k, v in row.to_dict().items()
+        if k not in EXCLUDED_FIELDS
+    }
+    records.append({"fields": record})
 
     for i in range(0, len(records), 10):
         batch = records[i:i+10]
