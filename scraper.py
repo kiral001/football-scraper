@@ -454,11 +454,17 @@ def upload_to_sheets(df):
     logging.info(f"Uploaded {len(df)} rows to Google Sheets.")
 
 # ==============================
-# ✅ AIRTABLE UPLOAD
+# ✅ AIRTABLE UPLOAD (UPSERT)
 # ==============================
 def upload_to_airtable(df, batch_size=10):
     """
-    Push the dataframe rows to Airtable using the REST API.
+    Push the dataframe rows to Airtable using the REST API with UPSERT.
+    Instead of always creating new records, this matches existing rows
+    on (Home Team, Away Team, Date) via Airtable's `performUpsert` and
+    updates them in place — so formula columns like "Notify Time",
+    "Trigger Now", "Notification Sent", "Ready to Notify" keep tracking
+    the same row instead of resetting on every run.
+
     Credentials are pulled from environment variables, which are
     populated via GitHub Actions secrets:
         AIRTABLE_API_KEY
@@ -475,21 +481,35 @@ def upload_to_airtable(df, batch_size=10):
         "Content-Type": "application/json",
     }
 
+    merge_fields = ["Home Team", "Away Team", "Date"]
+
     df_clean = df.fillna("").astype(str)
     records = df_clean.to_dict(orient="records")
 
-    total_uploaded = 0
+    total_upserted = 0
+    created_count = 0
+    updated_count = 0
+
     for i in range(0, len(records), batch_size):
         batch = records[i:i + batch_size]
         payload = {
+            "performUpsert": {"fieldsToMergeOn": merge_fields},
             "records": [{"fields": rec} for rec in batch],
             "typecast": True
         }
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=30)
+            resp = requests.patch(url, headers=headers, json=payload, timeout=30)
             if resp.status_code in (200, 201):
-                total_uploaded += len(batch)
-                logging.info(f"Airtable batch {i // batch_size + 1}: uploaded {len(batch)} records.")
+                body = resp.json()
+                batch_created = len(body.get("createdRecords", []))
+                batch_updated = len(body.get("updatedRecords", []))
+                created_count += batch_created
+                updated_count += batch_updated
+                total_upserted += len(batch)
+                logging.info(
+                    f"Airtable batch {i // batch_size + 1}: "
+                    f"{batch_created} created, {batch_updated} updated."
+                )
             else:
                 logging.error(
                     f"Airtable batch {i // batch_size + 1} failed "
@@ -499,7 +519,10 @@ def upload_to_airtable(df, batch_size=10):
             logging.error(f"Airtable batch {i // batch_size + 1} request error: {e}")
         time.sleep(0.25)  # respect Airtable's 5 req/sec rate limit
 
-    logging.info(f"Uploaded {total_uploaded} of {len(records)} rows to Airtable.")
+    logging.info(
+        f"Airtable upsert complete: {total_upserted}/{len(records)} rows processed "
+        f"({created_count} created, {updated_count} updated)."
+    )
 
 # ==============================
 # ✅ SAFE RUN
