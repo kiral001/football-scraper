@@ -598,3 +598,66 @@ def safe_run(max_retries=3):
 # ==============================
 if __name__ == "__main__":
     safe_run()
+
+
+# Update WC users
+
+
+creds_dict = json.loads(os.environ["GOOGLE_CREDS"])
+
+creds = Credentials.from_service_account_info(creds_dict, scopes=[
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+])
+
+
+client = gspread.authorize(creds)
+
+# ==============================
+# OPEN FILE
+# ==============================
+sheet_url = "https://docs.google.com/spreadsheets/d/1e_cR5X9HCfszFVEbyq0VriX-KFjI0Wr6a9VIdHDV8Mo"
+spreadsheet = client.open_by_url(sheet_url)
+
+# SOURCE (Form responses tab)
+source_ws = spreadsheet.get_worksheet_by_id(6469775)
+
+# TARGET (main sheet / first tab)
+target_ws = spreadsheet.sheet1
+
+# ==============================
+# LOAD DATA
+# ==============================
+data = source_ws.get_all_records()
+df = pd.DataFrame(data)
+
+# ==============================
+# PROCESS
+# ==============================
+col = "Which country you supporting to?"
+
+# split by comma OR semicolon
+df[col] = df[col].astype(str).str.split(r",|;")
+
+# make rows
+df = df.explode(col)
+
+# clean spaces
+df[col] = df[col].str.strip()
+
+# remove empty
+df = df[df[col] != ""]
+
+# ==============================
+# CLEAR TARGET
+# ==============================
+target_ws.clear()
+
+# ==============================
+# WRITE RESULT
+# ==============================
+target_ws.update(
+    [df.columns.values.tolist()] + df.values.tolist()
+)
+
+print("DONE ✅")
