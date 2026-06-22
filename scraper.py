@@ -3,7 +3,7 @@ import os
 import time
 import re
 import logging
-import requests  # ✅ ADDED ONLY
+import requests
 from datetime import date, timedelta, timezone, datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -24,9 +24,16 @@ CREDENTIALS_PATH = os.path.join(BASE_DIR, "credentials.json")
 LOG_PATH = os.path.join(BASE_DIR, "scraper.log")
 
 # ==============================
-# ✅ TIMEZONE — ROOT CAUSE #1
+# ✅ TIMEZONE
 # ==============================
 WIB = timezone(timedelta(hours=7))  # Asia/Jakarta
+
+# ==============================
+# ✅ AIRTABLE CONFIG (from GitHub Secrets / environment variables)
+# ==============================
+AIRTABLE_API_KEY = os.environ.get("AIRTABLE_API_KEY")
+AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID")
+AIRTABLE_TABLE_NAME = os.environ.get("AIRTABLE_TABLE_NAME")
 
 # ==============================
 # ✅ LOGGING
@@ -34,7 +41,7 @@ WIB = timezone(timedelta(hours=7))  # Asia/Jakarta
 logging.basicConfig(
     filename=LOG_PATH,
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    format="%(asctime)s [%(levelname)s] %(message)s"
 )
 console = logging.StreamHandler()
 console.setLevel(logging.INFO)
@@ -46,27 +53,31 @@ logging.getLogger().addHandler(console)
 def get_driver():
     options = Options()
     options.add_argument("--headless=new")
-    options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--lang=en-US")
+
     prefs = {"profile.managed_default_content_settings.images": 2}
     options.add_experimental_option("prefs", prefs)
+
     driver = webdriver.Chrome(
         service=Service(ChromeDriverManager().install()),
         options=options
     )
+
     driver.execute_cdp_cmd(
         "Emulation.setTimezoneOverride",
         {"timezoneId": "Asia/Jakarta"}
     )
+
     return driver
 
 # ==============================
 # ✅ ISO DATETIME PARSER
 # ==============================
 def iso_to_wib_time(iso_str):
+    """Convert ISO 8601 UTC string to HH:MM in WIB (UTC+7)."""
     if not iso_str:
         return None
     iso_str = iso_str.strip().replace("Z", "+00:00")
@@ -78,6 +89,7 @@ def iso_to_wib_time(iso_str):
         return None
 
 def iso_to_wib_date(iso_str):
+    """Convert ISO 8601 UTC string to DD/MM/YYYY in WIB (UTC+7)."""
     if not iso_str:
         return None
     iso_str = iso_str.strip().replace("Z", "+00:00")
@@ -92,6 +104,7 @@ def iso_to_wib_date(iso_str):
 # ✅ TIME VALIDATOR
 # ==============================
 def is_valid_match_time(text):
+    """True only for HH:MM within valid clock range."""
     text = str(text).strip()
     if not re.fullmatch(r"\d{2}:\d{2}", text):
         return False
@@ -99,60 +112,326 @@ def is_valid_match_time(text):
     return 0 <= hh <= 23 and 0 <= mm <= 59
 
 # ==============================
-# ✅ PARSER & SCRAPER (UNCHANGED)
+# ✅ TIME EXTRACTION — all strategies in order
+# ==============================
+def extract_time_from_card(match_element):
+    # ── Strategy 1: <time datetime="..."> ISO attribute ──────────────────
+    try:
+        time_tags = match_element.find_elements(By.XPATH, ".//time[@datetime]")
+        for el in time_tags:
+            dt_attr = el.get_attribute("datetime") or ""
+            if "T" in dt_attr:
+                result = iso_to_wib_time(dt_attr)
+                if result:
+                    logging.info(f"TIME via <time datetime> ISO: {dt_attr} → {result} WIB")
+                    return result
+    except StaleElementReferenceException:
+        pass
+    except Exception as e:
+        logging.debug(f"Strategy 1 error: {e}")
+
+    # ── Strategy 2: data-testid attributes OneFootball uses ──────────────
+    try:
+        for testid in ["match-kickoff-time", "kickoff-time", "match-time", "fixture-time"]:
+            els = match_element.find_elements(
+                By.XPATH, f".//*[@data-testid='{testid}']"
+            )
+            for el in els:
+                t = el.text.strip()
+                if is_valid_match_time(t):
+                    logging.info(f"TIME via data-testid={testid}: {t}")
+                    return t
+    except Exception as e:
+        logging.debug(f"Strategy 2 error: {e}")
+
+    # ── Strategy 3: aria-label on the match card itself ───────────────────
+    try:
+        label = match_element.get_attribute("aria-label") or ""
+        t = re.search(r"\b(\d{2}:\d{2})\b", label)
+        if t and is_valid_match_time(t.group(1)):
+            logging.info(f"TIME via card aria-label: {t.group(1)}")
+            return t.group(1)
+    except Exception as e:
+        logging.debug(f"Strategy 3 error: {e}")
+
+    # ── Strategy 4: leaf text nodes, strict HH:MM only ───────────────────
+    try:
+        leaf_nodes = match_element.find_elements(
+            By.XPATH,
+            ".//*[not(*) and string-length(normalize-space(text()))=5 and contains(text(),':')]"
+        )
+        for el in leaf_nodes:
+            t = el.text.strip()
+            if is_valid_match_time(t):
+                logging.info(f"TIME via leaf text: {t}")
+                return t
+    except Exception as e:
+        logging.debug(f"Strategy 4 error: {e}")
+
+    logging.warning("TIME not found in card")
+    return "Unknown"
+
+# ==============================
+# ✅ DATE EXTRACTION from card
+# ==============================
+def extract_date_from_card(match_element, text_lines):
+    # Strategy 1: ISO datetime attribute
+    try:
+        time_tags = match_element.find_elements(By.XPATH, ".//time[@datetime]")
+        for el in time_tags:
+            dt_attr = el.get_attribute("datetime") or ""
+            if "T" in dt_attr:
+                result = iso_to_wib_date(dt_attr)
+                if result:
+                    return result
+    except Exception:
+        pass
+
+    # Strategy 2: text line DD/MM/YYYY
+    for l in text_lines:
+        if re.match(r"^\d{2}/\d{2}/\d{4}$", l):
+            return l
+
+    # Strategy 3: relative date words
+    today = date.today()
+    for l in text_lines:
+        low = l.lower()
+        if low == "today":
+            return today.strftime("%d/%m/%Y")
+        elif low == "tomorrow":
+            return (today + timedelta(days=1)).strftime("%d/%m/%Y")
+
+    return "Unknown"
+
+# ==============================
+# ✅ PARSER (✅ FILTER ADDED HERE ONLY)
 # ==============================
 def parse_match_card(match):
     try:
         text = match.text.strip()
         lines = [l.strip() for l in text.split("\n") if l.strip()]
+
         if len(lines) < 2:
             return None
 
         home = lines[0]
         away = lines[1]
 
-        time_val = None
-        for l in lines:
-            if is_valid_match_time(l):
-                time_val = l
+        skip_keywords = [
+            "advertisement", "sign in", "follow", "subscribe", "download",
+            "winner", "loser", "group"
+        ]
 
-        if not time_val:
+        # ✅ FILTER BOTH HOME & AWAY
+        if any(kw in home.lower() or kw in away.lower() for kw in skip_keywords):
             return None
+
+        if len(home) < 2 or len(away) < 2:
+            return None
+
+        date_val = extract_date_from_card(match, lines)
+        time_val = extract_time_from_card(match)
 
         return {
             "Home Team": home,
             "Away Team": away,
-            "Date": date.today().strftime("%m/%d/%Y"),
+            "Date": date_val,
             "Time": time_val
         }
-    except:
+    except StaleElementReferenceException:
+        logging.warning("Stale element skipped")
+        return None
+    except Exception as e:
+        logging.error(f"Parse error: {e}")
         return None
 
-def get_data():
-    driver = get_driver()
-    driver.get("https://onefootball.com/en/competition/fifa-world-cup-12/fixtures")
-    time.sleep(5)
+# ==============================
+# ✅ SCRAPE — with proper lazy-load wait
+# ==============================
+def scrape_competition(driver, name, url):
+    logging.info(f"Scraping {name} → {url}")
+    driver.get(url)
+    try:
+        WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/match/']"))
+        )
+    except TimeoutException:
+        logging.error(f"Timeout waiting for match cards on {name}")
+        return []
+
+    time.sleep(3)
+    scroll_pause = 2.0
+    last_count = 0
+    stale_rounds = 0
+    for scroll_round in range(20):
+        driver.execute_script("window.scrollBy(0, 800)")
+        time.sleep(scroll_pause)
+        current_count = len(driver.find_elements(By.CSS_SELECTOR, "a[href*='/match/']"))
+        logging.info(f"Scroll {scroll_round+1}: {current_count} cards found")
+        if current_count == last_count:
+            stale_rounds += 1
+            if stale_rounds >= 3:
+                break
+        else:
+            stale_rounds = 0
+            last_count = current_count
+
+    driver.execute_script("window.scrollTo(0, 0)")
+    time.sleep(1)
 
     matches = driver.find_elements(By.CSS_SELECTOR, "a[href*='/match/']")
+    logging.info(f"Total match elements collected for {name}: {len(matches)}")
+
     results = []
+    seen_keys = set()
 
     for m in matches:
-        parsed = parse_match_card(m)
-        if parsed:
-            parsed["Competition"] = "World Cup"
-            results.append(parsed)
+        try:
+            parsed = parse_match_card(m)
+        except Exception as e:
+            logging.warning(f"Card parse failed: {e}")
+            continue
+        if not parsed:
+            continue
+        dedup_key = (parsed["Home Team"], parsed["Away Team"], parsed["Date"])
+        if dedup_key in seen_keys:
+            continue
+        seen_keys.add(dedup_key)
+        parsed["Competition"] = name
+        results.append(parsed)
+
+    logging.info(f"{name}: {len(results)} unique fixtures parsed")
+    return results
+
+# ==============================
+# ✅ DATE NORMALIZATION (fallback for text-based dates)
+# ==============================
+def normalize_date(d):
+    today = date.today()
+    d = str(d).lower().strip()
+    if d == "today":
+        return today.strftime("%d/%m/%Y")
+    elif d == "tomorrow":
+        return (today + timedelta(days=1)).strftime("%d/%m/%Y")
+    elif d == "yesterday":
+        return (today - timedelta(days=1)).strftime("%d/%m/%Y")
+    return d
+
+# ==============================
+# ✅ GET DATA
+# ==============================
+def get_data():
+    driver = get_driver()
+    competitions = {
+        "World Cup": "https://onefootball.com/en/competition/fifa-world-cup-12/fixtures"
+    }
+    all_data = []
+    for name, url in competitions.items():
+        try:
+            all_data.extend(scrape_competition(driver, name, url))
+        except Exception as e:
+            logging.error(f"{name} scrape error: {e}")
 
     driver.quit()
 
-    df = pd.DataFrame(results)
-    df["VS"] = "VS"
+    if not all_data:
+        logging.warning("No data collected from any competition.")
+        return pd.DataFrame()
 
+    df = pd.DataFrame(all_data)
+    df["VS"] = "VS"
+    df["Date"] = df["Date"].apply(normalize_date)
+
+    before = len(df)
+    df = df[df["Time"].apply(is_valid_match_time)]
+    after = len(df)
+    logging.info(f"Time filter: kept {after} of {before} rows")
+
+    # ── ✅ combine Date + Time into MatchTime datetime column ────────
     df["MatchTime"] = pd.to_datetime(
         df["Date"] + " " + df["Time"],
         format="%m/%d/%Y %H:%M",
         errors="coerce"
     ).dt.strftime("%m/%d/%Y %H:%M")
+    logging.info("MatchTime column added.")
+    # ─────────────────────────────────────────────────────────────────
 
+    return df
+
+# ==============================
+# ✅ MERGE LOGOS
+# ==============================
+def merge_logos(df):
+    logo_url = (
+        "https://docs.google.com/spreadsheets/d/"
+        "1wZ2VUxoLOajn6xC8YVp5vplIBo4o4stmqUpfm6VVs70"
+        "/gviz/tq?tqx=out:csv"
+    )
+    try:
+        logos = pd.read_csv(logo_url)
+        team_col = [c for c in logos.columns if "team" in c.lower()][0]
+        logo_col = [c for c in logos.columns if "logo" in c.lower()][0]
+        logos = logos[[team_col, logo_col]].rename(
+            columns={team_col: "Team", logo_col: "Logo"}
+        )
+        df = df.merge(logos, left_on="Home Team", right_on="Team", how="left")
+        df.rename(columns={"Logo": "Home Team Logo"}, inplace=True)
+        df.drop(columns=["Team"], inplace=True)
+        df = df.merge(logos, left_on="Away Team", right_on="Team", how="left")
+        df.rename(columns={"Logo": "Away Team Logo"}, inplace=True)
+        df.drop(columns=["Team"], inplace=True)
+        logging.info("Logos merged.")
+    except Exception as e:
+        logging.warning(f"Logo merge failed: {e}")
+        df["Home Team Logo"] = ""
+        df["Away Team Logo"] = ""
+    return df
+
+# ==============================
+# ✅ CLASSIFY CLUB SIZE
+# ==============================
+BIG_CLUBS = {
+    "argentina",
+    "brazil",
+    "croatia",
+    "england",
+    "france",
+    "germany",
+    "japan",
+    "netherlands",
+    "portugal",
+    "senegal",
+    "spain",
+    "uruguay"
+}
+
+def classify_club(team_name: str) -> str:
+    """Return 'Big Team' if team is in the big clubs list, else 'Small Club'."""
+    return "Big Team" if str(team_name).strip().lower() in BIG_CLUBS else "Small Club"
+
+def add_club_classification(df: pd.DataFrame) -> pd.DataFrame:
+    """Add Home Club Type and Away Club Type columns to the dataframe."""
+    df["Home Club Type"] = df["Home Team"].apply(classify_club)
+    df["Away Club Type"] = df["Away Team"].apply(classify_club)
+    logging.info("Club classification columns added.")
+    return df
+
+# ==============================
+# ✅ CLASSIFY MATCH TYPE
+# ==============================
+def add_match_type(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add Match Type column.
+    'Big Match'     — both Home Club Type AND Away Club Type are 'Big Club'
+    'Non Big Match' — any other combination
+    """
+    df["Match Type"] = df.apply(
+        lambda row: "Big Match"
+        if row["Home Club Type"] == "Big Club" and row["Away Club Type"] == "Big Club"
+        else "Non Big Match",
+        axis=1
+    )
+    logging.info("Match type column added.")
     return df
 
 # ==============================
@@ -175,53 +454,52 @@ def upload_to_sheets(df):
     logging.info(f"Uploaded {len(df)} rows to Google Sheets.")
 
 # ==============================
-# ✅ AIRTABLE (ADDED ONLY)
+# ✅ AIRTABLE UPLOAD
 # ==============================
-def upload_to_airtable(df):
-    API_KEY = os.getenv("AIRTABLE_API_KEY")
-    BASE_ID = os.getenv("AIRTABLE_BASE_ID")
-    TABLE_NAME = os.getenv("AIRTABLE_TABLE_NAME")
-
-    if not API_KEY or not BASE_ID or not TABLE_NAME:
-        logging.error("Airtable credentials missing.")
+def upload_to_airtable(df, batch_size=10):
+    """
+    Push the dataframe rows to Airtable using the REST API.
+    Credentials are pulled from environment variables, which are
+    populated via GitHub Actions secrets:
+        AIRTABLE_API_KEY
+        AIRTABLE_BASE_ID
+        AIRTABLE_TABLE_NAME
+    """
+    if not (AIRTABLE_API_KEY and AIRTABLE_BASE_ID and AIRTABLE_TABLE_NAME):
+        logging.warning("Airtable credentials missing — skipping Airtable upload.")
         return
 
-    url = f"https://api.airtable.com/v0/{BASE_ID}/{TABLE_NAME}"
-
+    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
     headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json"
+        "Authorization": f"Bearer {AIRTABLE_API_KEY}",
+        "Content-Type": "application/json",
     }
 
-    df = df.fillna("").astype(str)
+    df_clean = df.fillna("").astype(str)
+    records = df_clean.to_dict(orient="records")
 
-    EXCLUDED_FIELDS = {
-        "Notify Time",
-        "Trigger Now",
-        "Notification Sent",
-        "Ready to Notify"
-    }
-
-    records = []
-    for _, row in df.iterrows():
-        record = {
-            k: v for k, v in row.to_dict().items()
-            if k not in EXCLUDED_FIELDS
+    total_uploaded = 0
+    for i in range(0, len(records), batch_size):
+        batch = records[i:i + batch_size]
+        payload = {
+            "records": [{"fields": rec} for rec in batch],
+            "typecast": True
         }
-        records.append({"fields": record})
-
-    for i in range(0, len(records), 10):
-        batch = records[i:i+10]
         try:
-            res = requests.post(url, json={"records": batch}, headers=headers)
-
-            # ✅ THIS IS THE ONLY REAL FIX YOU NEEDED
-            logging.info(f"Airtable response: {res.status_code} - {res.text}")
-
+            resp = requests.post(url, headers=headers, json=payload, timeout=30)
+            if resp.status_code in (200, 201):
+                total_uploaded += len(batch)
+                logging.info(f"Airtable batch {i // batch_size + 1}: uploaded {len(batch)} records.")
+            else:
+                logging.error(
+                    f"Airtable batch {i // batch_size + 1} failed "
+                    f"({resp.status_code}): {resp.text}"
+                )
         except Exception as e:
-            logging.error(e)
+            logging.error(f"Airtable batch {i // batch_size + 1} request error: {e}")
+        time.sleep(0.25)  # respect Airtable's 5 req/sec rate limit
 
-    logging.info(f"Uploaded {len(df)} rows to Airtable.")
+    logging.info(f"Uploaded {total_uploaded} of {len(records)} rows to Airtable.")
 
 # ==============================
 # ✅ SAFE RUN
@@ -230,24 +508,21 @@ def safe_run(max_retries=3):
     for attempt in range(1, max_retries + 1):
         try:
             df = get_data()
-
-            logging.info(f"Rows collected: {len(df)}")  # ✅ DEBUG ONLY
-
             if not df.empty:
+                df = merge_logos(df)
+                df = add_club_classification(df)
+                df = add_match_type(df)
                 upload_to_sheets(df)
                 upload_to_airtable(df)
-
                 logging.info(f"✅ SUCCESS on attempt {attempt}")
                 return
             else:
                 logging.warning(f"Attempt {attempt}: empty dataframe.")
         except Exception as e:
             logging.error(f"Attempt {attempt} failed: {e}")
-
         if attempt < max_retries:
-            logging.info(f"Retrying in 15s...")
+            logging.info("Retrying in 15s...")
             time.sleep(15)
-
     logging.error("❌ ALL RETRIES FAILED")
 
 # ==============================
