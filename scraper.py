@@ -600,9 +600,13 @@ if __name__ == "__main__":
     safe_run()
 
 
-# Update WC users
+import pandas as pd
+import gspread
+from google.oauth2.service_account import Credentials
 
-
+# ==============================
+# AUTH
+# ==============================
 creds = Credentials.from_service_account_file(
     CREDENTIALS_PATH,
     scopes=[
@@ -610,8 +614,6 @@ creds = Credentials.from_service_account_file(
         "https://www.googleapis.com/auth/drive"
     ]
 )
-
-
 client = gspread.authorize(creds)
 
 # ==============================
@@ -620,11 +622,11 @@ client = gspread.authorize(creds)
 sheet_url = "https://docs.google.com/spreadsheets/d/1e_cR5X9HCfszFVEbyq0VriX-KFjI0Wr6a9VIdHDV8Mo"
 spreadsheet = client.open_by_url(sheet_url)
 
-# SOURCE (Form responses tab)
-source_ws = spreadsheet.get_worksheet_by_id(6469775)
+# SOURCE (Form responses tab) - referenced by title, safer than by_id
+source_ws = spreadsheet.worksheet("Form Responses 1")
 
-# TARGET (main sheet / first tab)
-target_ws = spreadsheet.sheet1
+# TARGET (the "info" tab — NOT sheet1!)
+target_ws = spreadsheet.worksheet("info")
 
 # ==============================
 # LOAD DATA
@@ -650,7 +652,7 @@ df[col] = df[col].str.strip()
 df = df[df[col] != ""]
 
 # ==============================
-# CLEAR TARGET
+# CLEAR TARGET ("info" only)
 # ==============================
 target_ws.clear()
 
@@ -661,4 +663,4 @@ target_ws.update(
     [df.columns.values.tolist()] + df.values.tolist()
 )
 
-print("DONE ✅")
+print("DONE ✅ — 'info' sheet updated, 'Form Responses 1' untouched")
