@@ -2,6 +2,8 @@ import pandas as pd
 import os
 import time
 import re
+import random
+import string
 import logging
 import requests
 from datetime import date, timedelta, timezone, datetime
@@ -15,26 +17,26 @@ from selenium.common.exceptions import TimeoutException, StaleElementReferenceEx
 from webdriver_manager.chrome import ChromeDriverManager
 import gspread
 from google.oauth2.service_account import Credentials
-
+ 
 # ==============================
 # ✅ PATHS
 # ==============================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CREDENTIALS_PATH = os.path.join(BASE_DIR, "credentials.json")
 LOG_PATH = os.path.join(BASE_DIR, "scraper.log")
-
+ 
 # ==============================
 # ✅ TIMEZONE
 # ==============================
 WIB = timezone(timedelta(hours=7))  # Asia/Jakarta
-
+ 
 # ==============================
 # ✅ AIRTABLE CONFIG (from GitHub Secrets / environment variables)
 # ==============================
 AIRTABLE_API_KEY = os.environ.get("AIRTABLE_API_KEY")
 AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID")
 AIRTABLE_TABLE_NAME = os.environ.get("AIRTABLE_TABLE_NAME")
-
+ 
 # ==============================
 # ✅ LOGGING
 # ==============================
@@ -46,7 +48,7 @@ logging.basicConfig(
 console = logging.StreamHandler()
 console.setLevel(logging.INFO)
 logging.getLogger().addHandler(console)
-
+ 
 # ==============================
 # ✅ DRIVER — with forced timezone
 # ==============================
@@ -57,22 +59,22 @@ def get_driver():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--lang=en-US")
-
+ 
     prefs = {"profile.managed_default_content_settings.images": 2}
     options.add_experimental_option("prefs", prefs)
-
+ 
     driver = webdriver.Chrome(
         service=Service(ChromeDriverManager().install()),
         options=options
     )
-
+ 
     driver.execute_cdp_cmd(
         "Emulation.setTimezoneOverride",
         {"timezoneId": "Asia/Jakarta"}
     )
-
+ 
     return driver
-
+ 
 # ==============================
 # ✅ ISO DATETIME PARSER
 # ==============================
@@ -87,7 +89,7 @@ def iso_to_wib_time(iso_str):
         return dt_wib.strftime("%H:%M")
     except Exception:
         return None
-
+ 
 def iso_to_wib_date(iso_str):
     """Convert ISO 8601 UTC string to DD/MM/YYYY in WIB (UTC+7)."""
     if not iso_str:
@@ -99,7 +101,7 @@ def iso_to_wib_date(iso_str):
         return dt_wib.strftime("%m/%d/%Y")
     except Exception:
         return None
-
+ 
 # ==============================
 # ✅ TIME VALIDATOR
 # ==============================
@@ -110,7 +112,7 @@ def is_valid_match_time(text):
         return False
     hh, mm = int(text[:2]), int(text[3:])
     return 0 <= hh <= 23 and 0 <= mm <= 59
-
+ 
 # ==============================
 # ✅ TIME EXTRACTION — all strategies in order
 # ==============================
@@ -129,7 +131,7 @@ def extract_time_from_card(match_element):
         pass
     except Exception as e:
         logging.debug(f"Strategy 1 error: {e}")
-
+ 
     # ── Strategy 2: data-testid attributes OneFootball uses ──────────────
     try:
         for testid in ["match-kickoff-time", "kickoff-time", "match-time", "fixture-time"]:
@@ -143,7 +145,7 @@ def extract_time_from_card(match_element):
                     return t
     except Exception as e:
         logging.debug(f"Strategy 2 error: {e}")
-
+ 
     # ── Strategy 3: aria-label on the match card itself ───────────────────
     try:
         label = match_element.get_attribute("aria-label") or ""
@@ -153,7 +155,7 @@ def extract_time_from_card(match_element):
             return t.group(1)
     except Exception as e:
         logging.debug(f"Strategy 3 error: {e}")
-
+ 
     # ── Strategy 4: leaf text nodes, strict HH:MM only ───────────────────
     try:
         leaf_nodes = match_element.find_elements(
@@ -167,10 +169,10 @@ def extract_time_from_card(match_element):
                 return t
     except Exception as e:
         logging.debug(f"Strategy 4 error: {e}")
-
+ 
     logging.warning("TIME not found in card")
     return "Unknown"
-
+ 
 # ==============================
 # ✅ DATE EXTRACTION from card
 # ==============================
@@ -186,12 +188,12 @@ def extract_date_from_card(match_element, text_lines):
                     return result
     except Exception:
         pass
-
+ 
     # Strategy 2: text line DD/MM/YYYY
     for l in text_lines:
         if re.match(r"^\d{2}/\d{2}/\d{4}$", l):
             return l
-
+ 
     # Strategy 3: relative date words
     today = date.today()
     for l in text_lines:
@@ -200,9 +202,9 @@ def extract_date_from_card(match_element, text_lines):
             return today.strftime("%d/%m/%Y")
         elif low == "tomorrow":
             return (today + timedelta(days=1)).strftime("%d/%m/%Y")
-
+ 
     return "Unknown"
-
+ 
 # ==============================
 # ✅ PARSER (✅ FILTER ADDED HERE ONLY)
 # ==============================
@@ -210,28 +212,28 @@ def parse_match_card(match):
     try:
         text = match.text.strip()
         lines = [l.strip() for l in text.split("\n") if l.strip()]
-
+ 
         if len(lines) < 2:
             return None
-
+ 
         home = lines[0]
         away = lines[1]
-
+ 
         skip_keywords = [
             "advertisement", "sign in", "follow", "subscribe", "download",
             "winner", "loser", "group"
         ]
-
+ 
         # ✅ FILTER BOTH HOME & AWAY
         if any(kw in home.lower() or kw in away.lower() for kw in skip_keywords):
             return None
-
+ 
         if len(home) < 2 or len(away) < 2:
             return None
-
+ 
         date_val = extract_date_from_card(match, lines)
         time_val = extract_time_from_card(match)
-
+ 
         return {
             "Home Team": home,
             "Away Team": away,
@@ -244,7 +246,7 @@ def parse_match_card(match):
     except Exception as e:
         logging.error(f"Parse error: {e}")
         return None
-
+ 
 # ==============================
 # ✅ SCRAPE — with proper lazy-load wait
 # ==============================
@@ -258,7 +260,7 @@ def scrape_competition(driver, name, url):
     except TimeoutException:
         logging.error(f"Timeout waiting for match cards on {name}")
         return []
-
+ 
     time.sleep(3)
     scroll_pause = 2.0
     last_count = 0
@@ -275,16 +277,16 @@ def scrape_competition(driver, name, url):
         else:
             stale_rounds = 0
             last_count = current_count
-
+ 
     driver.execute_script("window.scrollTo(0, 0)")
     time.sleep(1)
-
+ 
     matches = driver.find_elements(By.CSS_SELECTOR, "a[href*='/match/']")
     logging.info(f"Total match elements collected for {name}: {len(matches)}")
-
+ 
     results = []
     seen_keys = set()
-
+ 
     for m in matches:
         try:
             parsed = parse_match_card(m)
@@ -299,10 +301,10 @@ def scrape_competition(driver, name, url):
         seen_keys.add(dedup_key)
         parsed["Competition"] = name
         results.append(parsed)
-
+ 
     logging.info(f"{name}: {len(results)} unique fixtures parsed")
     return results
-
+ 
 # ==============================
 # ✅ DATE NORMALIZATION (fallback for text-based dates)
 # ==============================
@@ -316,7 +318,21 @@ def normalize_date(d):
     elif d == "yesterday":
         return (today - timedelta(days=1)).strftime("%d/%m/%Y")
     return d
-
+ 
+# ==============================
+# ✅ SHORT UNIQUE ID GENERATOR
+# ==============================
+def generate_short_id(length=7, existing_ids=None):
+    """Generate a random alphanumeric ID (default 7 chars), avoiding collisions
+    with any IDs already generated in the current batch."""
+    if existing_ids is None:
+        existing_ids = set()
+    chars = string.ascii_uppercase + string.digits
+    while True:
+        new_id = "".join(random.choices(chars, k=length))
+        if new_id not in existing_ids:
+            return new_id
+ 
 # ==============================
 # ✅ GET DATA
 # ==============================
@@ -331,22 +347,22 @@ def get_data():
             all_data.extend(scrape_competition(driver, name, url))
         except Exception as e:
             logging.error(f"{name} scrape error: {e}")
-
+ 
     driver.quit()
-
+ 
     if not all_data:
         logging.warning("No data collected from any competition.")
         return pd.DataFrame()
-
+ 
     df = pd.DataFrame(all_data)
     df["VS"] = "VS"
     df["Date"] = df["Date"].apply(normalize_date)
-
+ 
     before = len(df)
     df = df[df["Time"].apply(is_valid_match_time)]
     after = len(df)
     logging.info(f"Time filter: kept {after} of {before} rows")
-
+ 
     # ── ✅ combine Date + Time into MatchTime datetime column ────────
     df["MatchTime"] = pd.to_datetime(
         df["Date"] + " " + df["Time"],
@@ -355,37 +371,20 @@ def get_data():
     ).dt.strftime("%m/%d/%Y %H:%M")
     logging.info("MatchTime column added.")
     # ─────────────────────────────────────────────────────────────────
-
+ 
+    # ── ✅ generate short unique ID per fixture row ───────────────────
+    existing_ids = set()
+    ids = []
+    for _ in range(len(df)):
+        new_id = generate_short_id(length=7, existing_ids=existing_ids)
+        existing_ids.add(new_id)
+        ids.append(new_id)
+    df.insert(0, "ID", ids)
+    logging.info("ID column added.")
+    # ─────────────────────────────────────────────────────────────────
+ 
     return df
-
-# ==============================
-# ✅ MERGE LOGOS
-# ==============================
-def merge_logos(df):
-    logo_url = (
-        "https://docs.google.com/spreadsheets/d/"
-        "1wZ2VUxoLOajn6xC8YVp5vplIBo4o4stmqUpfm6VVs70"
-        "/gviz/tq?tqx=out:csv"
-    )
-    try:
-        logos = pd.read_csv(logo_url)
-        team_col = [c for c in logos.columns if "team" in c.lower()][0]
-        logo_col = [c for c in logos.columns if "logo" in c.lower()][0]
-        logos = logos[[team_col, logo_col]].rename(
-            columns={team_col: "Team", logo_col: "Logo"}
-        )
-        df = df.merge(logos, left_on="Home Team", right_on="Team", how="left")
-        df.rename(columns={"Logo": "Home Team Logo"}, inplace=True)
-        df.drop(columns=["Team"], inplace=True)
-        df = df.merge(logos, left_on="Away Team", right_on="Team", how="left")
-        df.rename(columns={"Logo": "Away Team Logo"}, inplace=True)
-        df.drop(columns=["Team"], inplace=True)
-        logging.info("Logos merged.")
-    except Exception as e:
-        logging.warning(f"Logo merge failed: {e}")
-        df["Home Team Logo"] = ""
-        df["Away Team Logo"] = ""
-    return df
+ 
 
 # ==============================
 # ✅ CLASSIFY CLUB SIZE
