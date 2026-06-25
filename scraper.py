@@ -635,7 +635,7 @@ df = pd.DataFrame(data)
 # ==============================
 # PROCESS — "info" sheet (Timestamp, Nama, Email, Country)
 # ==============================
-col = "Which country you supporting to?"
+col = "Which country are you supporting?"
 
 df_info = df[["Timestamp", "Nama", "Email", col]].copy()
 
