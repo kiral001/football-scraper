@@ -385,6 +385,34 @@ def get_data():
  
     return df
  
+# ==============================
+# ✅ MERGE LOGOS
+# ==============================
+def merge_logos(df):
+    logo_url = (
+        "https://docs.google.com/spreadsheets/d/"
+        "1wZ2VUxoLOajn6xC8YVp5vplIBo4o4stmqUpfm6VVs70"
+        "/gviz/tq?tqx=out:csv"
+    )
+    try:
+        logos = pd.read_csv(logo_url)
+        team_col = [c for c in logos.columns if "team" in c.lower()][0]
+        logo_col = [c for c in logos.columns if "logo" in c.lower()][0]
+        logos = logos[[team_col, logo_col]].rename(
+            columns={team_col: "Team", logo_col: "Logo"}
+        )
+        df = df.merge(logos, left_on="Home Team", right_on="Team", how="left")
+        df.rename(columns={"Logo": "Home Team Logo"}, inplace=True)
+        df.drop(columns=["Team"], inplace=True)
+        df = df.merge(logos, left_on="Away Team", right_on="Team", how="left")
+        df.rename(columns={"Logo": "Away Team Logo"}, inplace=True)
+        df.drop(columns=["Team"], inplace=True)
+        logging.info("Logos merged.")
+    except Exception as e:
+        logging.warning(f"Logo merge failed: {e}")
+        df["Home Team Logo"] = ""
+        df["Away Team Logo"] = ""
+    return df
 
 # ==============================
 # ✅ CLASSIFY CLUB SIZE
