@@ -443,7 +443,7 @@ BIG_CLUBS = {
 
 def classify_club(team_name: str) -> str:
     """Return 'Big Club' if team is in the big clubs list, else 'Small Club'."""
-    return "Big Team" if str(team_name).strip().lower() in BIG_CLUBS else "Small Club"
+    return "Big Club" if str(team_name).strip().lower() in BIG_CLUBS else "Small Club"
 
 def add_club_classification(df: pd.DataFrame) -> pd.DataFrame:
     """Add Home Club Type and Away Club Type columns to the dataframe."""
