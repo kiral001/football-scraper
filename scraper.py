@@ -339,7 +339,12 @@ def generate_short_id(length=7, existing_ids=None):
 def get_data():
     driver = get_driver()
     competitions = {
-        "World Cup": "https://onefootball.com/en/competition/fifa-world-cup-12/fixtures"
+        "EPL": "https://onefootball.com/en/competition/premier-league-9/fixtures",
+        "UCL": "https://onefootball.com/en/competition/uefa-champions-league-5/fixtures",
+        "FA Cup": "https://onefootball.com/en/competition/fa-cup-17/fixtures",
+        "LaLiga": "https://onefootball.com/en/competition/laliga-10/fixtures",
+        "Serie A": "https://onefootball.com/en/competition/serie-a-13/fixtures",
+        "UEL": "https://onefootball.com/en/competition/uefa-europa-league-7/fixtures"
     }
     all_data = []
     for name, url in competitions.items():
@@ -418,18 +423,22 @@ def merge_logos(df):
 # ✅ CLASSIFY CLUB SIZE
 # ==============================
 BIG_CLUBS = {
-    "argentina",
-    "brazil",
-    "croatia",
-    "england",
-    "france",
-    "germany",
-    "japan",
-    "netherlands",
-    "portugal",
-    "senegal",
-    "spain",
-    "uruguay"
+    "arsenal",
+    "liverpool fc",
+    "manchester united",
+    "manchester city",
+    "chelsea",
+    "tottenham hotspur",
+    "real madrid",
+    "barcelona",
+    "psg",
+    "atlético de madrid",
+    "napoli",
+    "inter milan",
+    "milan",
+    "juventus",
+    "bayern munich",
+    "borussia dortmund"
 }
 
 def classify_club(team_name: str) -> str:
@@ -944,4 +953,3 @@ print("DONE ✅ — Airtable 'info' table updated")
 # ==============================
 upload_to_airtable_wa(df_wa)
 print("DONE ✅ — Airtable 'info_wa' table updated")
- 
