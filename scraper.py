@@ -396,7 +396,7 @@ def get_data():
 def merge_logos(df):
     logo_url = (
         "https://docs.google.com/spreadsheets/d/"
-        "1wZ2VUxoLOajn6xC8YVp5vplIBo4o4stmqUpfm6VVs70"
+        "1BhPU_hskjdgmuSHBcmoPhGxtUscpRLCRed_DITIIOq4"
         "/gviz/tq?tqx=out:csv"
     )
     try:
