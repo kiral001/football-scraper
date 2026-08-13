@@ -1,24 +1,19 @@
 name: Run Scraper
-
 on:
   schedule:
     - cron: "0 1 * * *"
   workflow_dispatch:
-
 jobs:
   run-script:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-
       - name: Cache pip
         uses: actions/cache@v4
         with:
@@ -26,24 +21,19 @@ jobs:
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
       - name: Install Chrome
         uses: browser-actions/setup-chrome@v1
-
       - name: Create credentials.json
         run: |
           echo '${{ secrets.GOOGLE_CREDS }}' > credentials.json
-
       - name: Run scraper
         run: python scraper.py
         env:
-          AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
-          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
-          AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
-
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       - name: Show logs
         if: always()
         run: cat scraper.log || echo "No log found"
