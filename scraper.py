@@ -835,7 +835,7 @@ df_info = df_info[
 # ==============================
 # PROCESS — "info_wa" sheet (Timestamp, Nama, Phone Number, Country)
 # ==============================
-df_wa = df[["Timestamp", "Nama", "Phone Number", col]].copy()
+df_wa = df[["Timestamp", "Nama", "ID Telegram", col]].copy()
  
 # split by comma OR semicolon
 df_wa[col] = df_wa[col].astype(str).str.split(r",|;")
