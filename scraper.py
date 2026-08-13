@@ -5,7 +5,6 @@ import re
 import random
 import string
 import logging
-import requests
 from datetime import date, timedelta, timezone, datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -29,13 +28,6 @@ LOG_PATH = os.path.join(BASE_DIR, "scraper.log")
 # ✅ TIMEZONE
 # ==============================
 WIB = timezone(timedelta(hours=7))  # Asia/Jakarta
- 
-# ==============================
-# ✅ AIRTABLE CONFIG (from GitHub Secrets / environment variables)
-# ==============================
-AIRTABLE_API_KEY = os.environ.get("AIRTABLE_API_KEY")
-AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID")
-AIRTABLE_TABLE_NAME = os.environ.get("AIRTABLE_TABLE_NAME")
  
 # ==============================
 # ✅ LOGGING
@@ -490,122 +482,6 @@ def upload_to_sheets(df):
     logging.info(f"Uploaded {len(df)} rows to Google Sheets.")
 
 # ==============================
-# ✅ AIRTABLE CLEAR ALL RECORDS
-# ==============================
-def clear_airtable_table():
-    """
-    Delete every existing record in the Airtable table before refilling
-    it with freshly scraped data. Airtable allows deleting up to 10
-    record IDs per request, so this fetches all records (paginated)
-    and deletes them in batches of 10.
-    """
-    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
-    headers = {
-        "Authorization": f"Bearer {AIRTABLE_API_KEY}",
-    }
-
-    all_record_ids = []
-    offset = None
-
-    # ── Fetch all record IDs (paginated, 100 per page) ──────────────────
-    while True:
-        params = {"pageSize": 100, "fields[]": "Home Team"}
-        if offset:
-            params["offset"] = offset
-        try:
-            resp = requests.get(url, headers=headers, params=params, timeout=30)
-        except Exception as e:
-            logging.error(f"Airtable fetch-for-clear request error: {e}")
-            break
-
-        if resp.status_code != 200:
-            logging.error(f"Airtable fetch-for-clear failed ({resp.status_code}): {resp.text}")
-            break
-
-        body = resp.json()
-        all_record_ids.extend([rec["id"] for rec in body.get("records", [])])
-        offset = body.get("offset")
-        if not offset:
-            break
-
-    if not all_record_ids:
-        logging.info("Airtable table already empty — nothing to clear.")
-        return
-
-    # ── Delete in batches of 10 (Airtable's max per delete request) ────
-    deleted_count = 0
-    for i in range(0, len(all_record_ids), 10):
-        batch_ids = all_record_ids[i:i + 10]
-        del_params = [("records[]", rid) for rid in batch_ids]
-        try:
-            resp = requests.delete(url, headers=headers, params=del_params, timeout=30)
-            if resp.status_code == 200:
-                deleted_count += len(batch_ids)
-            else:
-                logging.error(f"Airtable delete batch failed ({resp.status_code}): {resp.text}")
-        except Exception as e:
-            logging.error(f"Airtable delete batch request error: {e}")
-        time.sleep(0.25)
-
-    logging.info(f"Airtable cleared: {deleted_count}/{len(all_record_ids)} records deleted.")
-
-# ==============================
-# ✅ AIRTABLE UPLOAD (CLEAR + REFILL)
-# ==============================
-def upload_to_airtable(df, batch_size=10):
-    """
-    Wipe the Airtable table clean, then re-upload all freshly scraped
-    rows as brand-new records. This guarantees the table always exactly
-    mirrors the latest scrape.
-
-    Credentials are pulled from environment variables, which are
-    populated via GitHub Actions secrets:
-        AIRTABLE_API_KEY
-        AIRTABLE_BASE_ID
-        AIRTABLE_TABLE_NAME
-    """
-    if not (AIRTABLE_API_KEY and AIRTABLE_BASE_ID and AIRTABLE_TABLE_NAME):
-        logging.warning("Airtable credentials missing — skipping Airtable upload.")
-        return
-
-    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
-    headers = {
-        "Authorization": f"Bearer {AIRTABLE_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    # ── Step 1: erase everything currently in the table ─────────────────
-    clear_airtable_table()
-
-    # ── Step 2: refill with freshly scraped rows ─────────────────────────
-    df_clean = df.fillna("").astype(str)
-    records = df_clean.to_dict(orient="records")
-
-    total_created = 0
-
-    for i in range(0, len(records), batch_size):
-        batch = records[i:i + batch_size]
-        payload = {
-            "records": [{"fields": rec} for rec in batch],
-            "typecast": True
-        }
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=30)
-            if resp.status_code in (200, 201):
-                total_created += len(batch)
-                logging.info(f"Airtable batch {i // batch_size + 1}: created {len(batch)} records.")
-            else:
-                logging.error(
-                    f"Airtable batch {i // batch_size + 1} failed "
-                    f"({resp.status_code}): {resp.text}"
-                )
-        except Exception as e:
-            logging.error(f"Airtable batch {i // batch_size + 1} request error: {e}")
-        time.sleep(0.25)  # respect Airtable's 5 req/sec rate limit
-
-    logging.info(f"Airtable refill complete: {total_created}/{len(records)} rows created.")
-
-# ==============================
 # ✅ SAFE RUN
 # ==============================
 def safe_run(max_retries=3):
@@ -617,7 +493,6 @@ def safe_run(max_retries=3):
                 df = add_club_classification(df)
                 df = add_match_type(df)
                 upload_to_sheets(df)
-                upload_to_airtable(df)
                 logging.info(f"✅ SUCCESS on attempt {attempt}")
                 return
             else:
@@ -710,7 +585,7 @@ df_wa = df_wa.explode(col)
  
 # clean spaces
 df_wa[col] = df_wa[col].str.strip()
- 
+ gma
 # remove empty
 df_wa = df_wa[df_wa[col] != ""]
  
@@ -751,205 +626,3 @@ target_ws_wa.update(
 )
  
 print("DONE ✅ — 'info_wa' sheet updated, 'Form Responses 1' untouched")
- 
-# ==============================
-# AIRTABLE CONFIG (for "info" sheet)
-# ==============================
-AIRTABLE_API_KEY = os.environ.get("AIRTABLE_API_KEY")
-AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID")
-AIRTABLE_TABLE_NAME = "info"  # separate table name for "info"
- 
-# ==============================
-# AIRTABLE CONFIG (for "info_wa" sheet)
-# ==============================
-AIRTABLE_TABLE_NAME_WA = "info_wa"  # separate table name for "info_wa"
- 
-# ==============================
-# AIRTABLE CLEAR ALL RECORDS
-# ==============================
-def clear_airtable_table():
-    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
-    headers = {"Authorization": f"Bearer {AIRTABLE_API_KEY}"}
- 
-    all_record_ids = []
-    offset = None
- 
-    while True:
-        params = {"pageSize": 100}
-        if offset:
-            params["offset"] = offset
-        try:
-            resp = requests.get(url, headers=headers, params=params, timeout=30)
-        except Exception as e:
-            print(f"Airtable fetch-for-clear request error: {e}")
-            break
- 
-        if resp.status_code != 200:
-            print(f"Airtable fetch-for-clear failed ({resp.status_code}): {resp.text}")
-            break
- 
-        body = resp.json()
-        all_record_ids.extend([rec["id"] for rec in body.get("records", [])])
-        offset = body.get("offset")
-        if not offset:
-            break
- 
-    if not all_record_ids:
-        print("Airtable 'info' table already empty — nothing to clear.")
-        return
- 
-    deleted_count = 0
-    for i in range(0, len(all_record_ids), 10):
-        batch_ids = all_record_ids[i:i + 10]
-        del_params = [("records[]", rid) for rid in batch_ids]
-        try:
-            resp = requests.delete(url, headers=headers, params=del_params, timeout=30)
-            if resp.status_code == 200:
-                deleted_count += len(batch_ids)
-            else:
-                print(f"Airtable delete batch failed ({resp.status_code}): {resp.text}")
-        except Exception as e:
-            print(f"Airtable delete batch request error: {e}")
-        time.sleep(0.25)
- 
-    print(f"Airtable 'info' table cleared: {deleted_count}/{len(all_record_ids)} records deleted.")
- 
-# ==============================
-# AIRTABLE CLEAR ALL RECORDS — "info_wa"
-# ==============================
-def clear_airtable_table_wa():
-    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME_WA}"
-    headers = {"Authorization": f"Bearer {AIRTABLE_API_KEY}"}
- 
-    all_record_ids = []
-    offset = None
- 
-    while True:
-        params = {"pageSize": 100}
-        if offset:
-            params["offset"] = offset
-        try:
-            resp = requests.get(url, headers=headers, params=params, timeout=30)
-        except Exception as e:
-            print(f"Airtable fetch-for-clear request error (info_wa): {e}")
-            break
- 
-        if resp.status_code != 200:
-            print(f"Airtable fetch-for-clear failed (info_wa, {resp.status_code}): {resp.text}")
-            break
- 
-        body = resp.json()
-        all_record_ids.extend([rec["id"] for rec in body.get("records", [])])
-        offset = body.get("offset")
-        if not offset:
-            break
- 
-    if not all_record_ids:
-        print("Airtable 'info_wa' table already empty — nothing to clear.")
-        return
- 
-    deleted_count = 0
-    for i in range(0, len(all_record_ids), 10):
-        batch_ids = all_record_ids[i:i + 10]
-        del_params = [("records[]", rid) for rid in batch_ids]
-        try:
-            resp = requests.delete(url, headers=headers, params=del_params, timeout=30)
-            if resp.status_code == 200:
-                deleted_count += len(batch_ids)
-            else:
-                print(f"Airtable delete batch failed (info_wa, {resp.status_code}): {resp.text}")
-        except Exception as e:
-            print(f"Airtable delete batch request error (info_wa): {e}")
-        time.sleep(0.25)
- 
-    print(f"Airtable 'info_wa' table cleared: {deleted_count}/{len(all_record_ids)} records deleted.")
- 
-# ==============================
-# AIRTABLE UPLOAD (CLEAR + REFILL) — "info"
-# ==============================
-def upload_to_airtable(df, batch_size=10):
-    if not (AIRTABLE_API_KEY and AIRTABLE_BASE_ID and AIRTABLE_TABLE_NAME):
-        print("Airtable credentials missing — skipping Airtable upload.")
-        return
- 
-    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
-    headers = {
-        "Authorization": f"Bearer {AIRTABLE_API_KEY}",
-        "Content-Type": "application/json",
-    }
- 
-    clear_airtable_table()
- 
-    df_clean = df.fillna("").astype(str)
-    records = df_clean.to_dict(orient="records")
- 
-    total_created = 0
-    for i in range(0, len(records), batch_size):
-        batch = records[i:i + batch_size]
-        payload = {
-            "records": [{"fields": rec} for rec in batch],
-            "typecast": True
-        }
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=30)
-            if resp.status_code in (200, 201):
-                total_created += len(batch)
-                print(f"Airtable batch {i // batch_size + 1}: created {len(batch)} records.")
-            else:
-                print(f"Airtable batch {i // batch_size + 1} failed ({resp.status_code}): {resp.text}")
-        except Exception as e:
-            print(f"Airtable batch {i // batch_size + 1} request error: {e}")
-        time.sleep(0.25)
- 
-    print(f"Airtable 'info' refill complete: {total_created}/{len(records)} rows created.")
- 
-# ==============================
-# AIRTABLE UPLOAD (CLEAR + REFILL) — "info_wa"
-# ==============================
-def upload_to_airtable_wa(df, batch_size=10):
-    if not (AIRTABLE_API_KEY and AIRTABLE_BASE_ID and AIRTABLE_TABLE_NAME_WA):
-        print("Airtable credentials missing — skipping Airtable upload (info_wa).")
-        return
- 
-    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME_WA}"
-    headers = {
-        "Authorization": f"Bearer {AIRTABLE_API_KEY}",
-        "Content-Type": "application/json",
-    }
- 
-    clear_airtable_table_wa()
- 
-    df_clean = df.fillna("").astype(str)
-    records = df_clean.to_dict(orient="records")
- 
-    total_created = 0
-    for i in range(0, len(records), batch_size):
-        batch = records[i:i + batch_size]
-        payload = {
-            "records": [{"fields": rec} for rec in batch],
-            "typecast": True
-        }
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=30)
-            if resp.status_code in (200, 201):
-                total_created += len(batch)
-                print(f"Airtable batch {i // batch_size + 1} (info_wa): created {len(batch)} records.")
-            else:
-                print(f"Airtable batch {i // batch_size + 1} (info_wa) failed ({resp.status_code}): {resp.text}")
-        except Exception as e:
-            print(f"Airtable batch {i // batch_size + 1} (info_wa) request error: {e}")
-        time.sleep(0.25)
- 
-    print(f"Airtable 'info_wa' refill complete: {total_created}/{len(records)} rows created.")
- 
-# ==============================
-# RUN AIRTABLE UPLOAD — "info"
-# ==============================
-upload_to_airtable(df_info)
-print("DONE ✅ — Airtable 'info' table updated")
- 
-# ==============================
-# RUN AIRTABLE UPLOAD — "info_wa"
-# ==============================
-upload_to_airtable_wa(df_wa)
-print("DONE ✅ — Airtable 'info_wa' table updated")
