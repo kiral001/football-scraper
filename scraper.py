@@ -833,7 +833,7 @@ df_info = df_info[
 ]
  
 # ==============================
-# PROCESS — "info_wa" sheet (Timestamp, Nama, Phone Number, Country)
+# PROCESS — "info_wa" sheet (Timestamp, Nama, ID Telegram, Country)
 # ==============================
 df_wa = df[["Timestamp", "Nama", "ID Telegram", col]].copy()
  
@@ -849,14 +849,14 @@ df_wa[col] = df_wa[col].str.strip()
 # remove empty
 df_wa = df_wa[df_wa[col] != ""]
  
-# remove rows where Timestamp, Nama, or Phone Number is blank
+# remove rows where Timestamp, Nama, or ID Telegram is blank
 df_wa["Timestamp"] = df_wa["Timestamp"].astype(str).str.strip()
 df_wa["Nama"] = df_wa["Nama"].astype(str).str.strip()
-df_wa["Phone Number"] = df_wa["Phone Number"].astype(str).str.strip()
+df_wa["ID Telegram"] = df_wa["ID Telegram"].astype(str).str.strip()
 df_wa = df_wa[
     (df_wa["Timestamp"] != "") &
     (df_wa["Nama"] != "") &
-    (df_wa["Phone Number"] != "")
+    (df_wa["ID Telegram"] != "")
 ]
  
 # ==============================
