@@ -443,6 +443,15 @@ def merge_logos(df):
         logos = logos[[team_col, logo_col]].rename(
             columns={team_col: "Team", logo_col: "Logo"}
         )
+        # ── ✅ guard against duplicate team rows in the logo sheet, which
+        # would otherwise fan out into duplicate fixture rows on merge ──
+        before_logo_dedup = len(logos)
+        logos = logos.drop_duplicates(subset=["Team"], keep="first")
+        if len(logos) < before_logo_dedup:
+            logging.warning(
+                f"Logo sheet had {before_logo_dedup - len(logos)} duplicate "
+                f"team row(s) — deduped before merging."
+            )
         df = df.merge(logos, left_on="Home Team", right_on="Team", how="left")
         df.rename(columns={"Logo": "Home Team Logo"}, inplace=True)
         df.drop(columns=["Team"], inplace=True)
@@ -725,6 +734,18 @@ def safe_run(max_retries=3):
             df = get_data()
             if not df.empty:
                 df = merge_logos(df)
+
+                # ── ✅ safety net: ID is unique per scraped fixture, so if
+                # the logo merge (or anything else) fanned out any rows,
+                # this collapses them back down. ─────────────────────────
+                before_id_dedup = len(df)
+                df = df.drop_duplicates(subset=["ID"], keep="first").reset_index(drop=True)
+                if len(df) < before_id_dedup:
+                    logging.warning(
+                        f"Post-merge dedupe removed {before_id_dedup - len(df)} "
+                        f"duplicate row(s) (kept {len(df)} of {before_id_dedup})."
+                    )
+
                 df = add_club_classification(df)
                 df = add_match_type(df)
 
