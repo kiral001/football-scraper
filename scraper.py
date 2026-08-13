@@ -231,6 +231,12 @@ def parse_match_card(match):
  
         home = lines[0]
         away = lines[1]
+
+        # ── ✅ capture the match's unique URL for reliable dedup ──────────
+        try:
+            match_url = match.get_attribute("href") or ""
+        except Exception:
+            match_url = ""
  
         skip_keywords = [
             "advertisement", "sign in", "follow", "subscribe", "download",
@@ -251,7 +257,8 @@ def parse_match_card(match):
             "Home Team": home,
             "Away Team": away,
             "Date": date_val,
-            "Time": time_val
+            "Time": time_val,
+            "Match URL": match_url
         }
     except StaleElementReferenceException:
         logging.warning("Stale element skipped")
@@ -308,7 +315,11 @@ def scrape_competition(driver, name, url):
             continue
         if not parsed:
             continue
-        dedup_key = (parsed["Home Team"], parsed["Away Team"], parsed["Date"])
+        # Prefer the unique match URL for dedup; fall back to team+date
+        # only if the URL wasn't captured for some reason.
+        dedup_key = parsed.get("Match URL") or (
+            parsed["Home Team"], parsed["Away Team"], parsed["Date"]
+        )
         if dedup_key in seen_keys:
             continue
         seen_keys.add(dedup_key)
@@ -399,6 +410,19 @@ def get_data():
         ids.append(new_id)
     df.insert(0, "ID", ids)
     logging.info("ID column added.")
+    # ─────────────────────────────────────────────────────────────────
+
+    # ── ✅ final safety-net dedupe before anything gets uploaded ────────
+    before_dedup = len(df)
+    df = df.drop_duplicates(
+        subset=["Home Team", "Away Team", "Date", "Time"], keep="first"
+    ).reset_index(drop=True)
+    after_dedup = len(df)
+    if after_dedup < before_dedup:
+        logging.warning(
+            f"Global dedupe removed {before_dedup - after_dedup} duplicate row(s) "
+            f"(kept {after_dedup} of {before_dedup})."
+        )
     # ─────────────────────────────────────────────────────────────────
  
     return df
@@ -761,7 +785,7 @@ df = pd.DataFrame(data)
 # ==============================
 # PROCESS — "info" sheet (Timestamp, Nama, Email, Country)
 # ==============================
-col = "Which club are you supporting?"
+col = "Which country are you supporting?"
  
 df_info = df[["Timestamp", "Nama", "Email", col]].copy()
  
