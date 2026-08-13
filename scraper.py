@@ -5,7 +5,11 @@ import re
 import random
 import string
 import logging
+import smtplib
+import requests
 from datetime import date, timedelta, timezone, datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -28,6 +32,23 @@ LOG_PATH = os.path.join(BASE_DIR, "scraper.log")
 # ✅ TIMEZONE
 # ==============================
 WIB = timezone(timedelta(hours=7))  # Asia/Jakarta
+ 
+# ==============================
+# ✅ SHEET URLS
+# ==============================
+FIXTURES_SHEET_URL = "https://docs.google.com/spreadsheets/d/1BhPU_hskjdgmuSHBcmoPhGxtUscpRLCRed_DITIIOq4/"
+READERS_SHEET_URL = "https://docs.google.com/spreadsheets/d/1e_cR5X9HCfszFVEbyq0VriX-KFjI0Wr6a9VIdHDV8Mo"
+
+# ==============================
+# ✅ ALERT CONFIG (from environment / GitHub Secrets)
+# ==============================
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
+GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")  # Gmail App Password, not your normal password
+
+# Alert window: only fire for matches this many minutes out (1-2 hours)
+NOTIFY_MIN_MINUTES = int(os.environ.get("NOTIFY_MIN_MINUTES", "60"))
+NOTIFY_MAX_MINUTES = int(os.environ.get("NOTIFY_MAX_MINUTES", "120"))
  
 # ==============================
 # ✅ LOGGING
@@ -465,21 +486,211 @@ def add_match_type(df: pd.DataFrame) -> pd.DataFrame:
 # ==============================
 # ✅ GOOGLE SHEETS
 # ==============================
-def upload_to_sheets(df):
+def get_sheets_client():
     scope = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
     ]
     creds = Credentials.from_service_account_file(CREDENTIALS_PATH, scopes=scope)
-    client = gspread.authorize(creds)
-    sheet = client.open_by_url(
-        "https://docs.google.com/spreadsheets/d/1BhPU_hskjdgmuSHBcmoPhGxtUscpRLCRed_DITIIOq4/"
-    )
+    return gspread.authorize(creds)
+
+def preserve_notified_flags(df, ws):
+    """
+    Before wiping the sheet, read the existing 'Notified' values keyed by
+    (Home Team, Away Team, Date) and carry them onto the freshly scraped
+    rows, so already-alerted matches don't get alerted again.
+    """
+    df["Notified"] = "FALSE"
+    try:
+        existing = ws.get_all_records()
+    except Exception as e:
+        logging.warning(f"Could not read existing sheet for Notified carry-over: {e}")
+        return df
+
+    notified_map = {}
+    for row in existing:
+        key = (row.get("Home Team"), row.get("Away Team"), row.get("Date"))
+        notified_map[key] = str(row.get("Notified", "")).strip().upper()
+
+    def lookup(row):
+        key = (row["Home Team"], row["Away Team"], row["Date"])
+        return "TRUE" if notified_map.get(key) == "TRUE" else "FALSE"
+
+    df["Notified"] = df.apply(lookup, axis=1)
+    logging.info("Notified flags carried over from previous sheet state.")
+    return df
+
+def upload_to_sheets(client, df):
+    sheet = client.open_by_url(FIXTURES_SHEET_URL)
     ws = sheet.sheet1
+    df = preserve_notified_flags(df, ws)
     ws.clear()
     df = df.fillna("").astype(str)
     ws.update([df.columns.tolist()] + df.values.tolist())
     logging.info(f"Uploaded {len(df)} rows to Google Sheets.")
+    return ws, df
+
+# ==============================
+# ✅ ALERTS — find matches due soon
+# ==============================
+def matches_due_soon(df):
+    now = datetime.now(WIB)
+    due = []
+    for _, row in df.iterrows():
+        if str(row.get("Notified", "")).strip().upper() == "TRUE":
+            continue
+
+        match_time_str = str(row.get("MatchTime", "")).strip()
+        if not match_time_str:
+            continue
+
+        try:
+            kickoff = datetime.strptime(match_time_str, "%m/%d/%Y %H:%M").replace(tzinfo=WIB)
+        except ValueError:
+            continue
+
+        minutes_until = (kickoff - now).total_seconds() / 60
+        if NOTIFY_MIN_MINUTES <= minutes_until <= NOTIFY_MAX_MINUTES:
+            due.append(row)
+
+    return due
+
+# ==============================
+# ✅ ALERTS — load reader contacts
+# ==============================
+def load_readers(client):
+    """
+    Pull email addresses from the 'info' tab, and Telegram chat IDs from an
+    'info_telegram' tab (columns: Nama, Telegram Chat ID).
+
+    NOTE: Telegram only lets a bot message users who have already messaged
+    the bot at least once — readers need to /start your bot and you need to
+    record their chat ID in 'info_telegram' (e.g. via a form field).
+    """
+    sheet = client.open_by_url(READERS_SHEET_URL)
+
+    emails = []
+    try:
+        info_ws = sheet.worksheet("info")
+        for row in info_ws.get_all_records():
+            email = str(row.get("Email", "")).strip()
+            if email:
+                emails.append(email)
+    except Exception as e:
+        logging.warning(f"Could not load 'info' sheet for emails: {e}")
+
+    chat_ids = []
+    try:
+        tg_ws = sheet.worksheet("info_telegram")
+        for row in tg_ws.get_all_records():
+            cid = str(row.get("Telegram Chat ID", "")).strip()
+            if cid:
+                chat_ids.append(cid)
+    except Exception as e:
+        logging.warning(f"'info_telegram' sheet not found or unreadable, skipping Telegram: {e}")
+
+    return sorted(set(emails)), sorted(set(chat_ids))
+
+# ==============================
+# ✅ ALERTS — Telegram
+# ==============================
+def send_telegram_message(chat_id, text):
+    if not TELEGRAM_BOT_TOKEN:
+        logging.warning("TELEGRAM_BOT_TOKEN not set — skipping Telegram send.")
+        return False
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    try:
+        resp = requests.post(
+            url,
+            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+            timeout=15
+        )
+        if resp.status_code == 200:
+            return True
+        logging.error(f"Telegram send failed for {chat_id} ({resp.status_code}): {resp.text}")
+    except Exception as e:
+        logging.error(f"Telegram send error for {chat_id}: {e}")
+    return False
+
+# ==============================
+# ✅ ALERTS — Gmail digest
+# ==============================
+def send_email_digest(recipients, subject, body):
+    if not (GMAIL_ADDRESS and GMAIL_APP_PASSWORD):
+        logging.warning("GMAIL_ADDRESS / GMAIL_APP_PASSWORD not set — skipping email.")
+        return
+    if not recipients:
+        logging.info("No email recipients — skipping email digest.")
+        return
+
+    msg = MIMEMultipart()
+    msg["From"] = GMAIL_ADDRESS
+    msg["Subject"] = subject
+    msg["Bcc"] = ", ".join(recipients)
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+            server.sendmail(GMAIL_ADDRESS, recipients, msg.as_string())
+        logging.info(f"Email digest sent to {len(recipients)} recipients.")
+    except Exception as e:
+        logging.error(f"Email send failed: {e}")
+
+# ==============================
+# ✅ ALERTS — message builder
+# ==============================
+def build_alert_text(matches):
+    lines = ["⚽ Matches kicking off soon:\n"]
+    for m in matches:
+        lines.append(
+            f"{m.get('Home Team')} vs {m.get('Away Team')} — "
+            f"{m.get('Time')} WIB ({m.get('Competition')})"
+        )
+    return "\n".join(lines)
+
+# ==============================
+# ✅ ALERTS — mark matches as notified
+# ==============================
+def mark_as_notified(ws, notified_ids):
+    header = ws.row_values(1)
+    if "Notified" not in header or "ID" not in header:
+        logging.warning("'Notified' or 'ID' column missing — cannot mark rows as notified.")
+        return
+
+    id_col_index = header.index("ID") + 1
+    notified_col_index = header.index("Notified") + 1
+
+    id_column_values = ws.col_values(id_col_index)  # includes header at index 0
+    for row_num, cell_id in enumerate(id_column_values[1:], start=2):
+        if cell_id in notified_ids:
+            ws.update_cell(row_num, notified_col_index, "TRUE")
+
+# ==============================
+# ✅ ALERTS — run the check-and-notify step
+# ==============================
+def run_alerts(client, ws, df):
+    due = matches_due_soon(df)
+    if not due:
+        logging.info("No matches due for alerting right now.")
+        return
+
+    logging.info(f"{len(due)} match(es) due for alerts.")
+    emails, chat_ids = load_readers(client)
+    alert_text = build_alert_text(due)
+
+    sent_telegram = 0
+    for cid in chat_ids:
+        if send_telegram_message(cid, alert_text):
+            sent_telegram += 1
+        time.sleep(0.3)  # gentle on Telegram rate limits
+    logging.info(f"Telegram: sent to {sent_telegram}/{len(chat_ids)} chat IDs.")
+
+    send_email_digest(emails, "⚽ Matches starting soon!", alert_text)
+
+    notified_ids = {row.get("ID") for row in due if row.get("ID")}
+    mark_as_notified(ws, notified_ids)
+    logging.info(f"Marked {len(notified_ids)} match(es) as notified.")
 
 # ==============================
 # ✅ SAFE RUN
@@ -492,7 +703,11 @@ def safe_run(max_retries=3):
                 df = merge_logos(df)
                 df = add_club_classification(df)
                 df = add_match_type(df)
-                upload_to_sheets(df)
+
+                client = get_sheets_client()
+                ws, df = upload_to_sheets(client, df)
+                run_alerts(client, ws, df)
+
                 logging.info(f"✅ SUCCESS on attempt {attempt}")
                 return
             else:
@@ -585,7 +800,7 @@ df_wa = df_wa.explode(col)
  
 # clean spaces
 df_wa[col] = df_wa[col].str.strip()
- gma
+ 
 # remove empty
 df_wa = df_wa[df_wa[col] != ""]
  
