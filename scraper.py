@@ -5,11 +5,7 @@ import re
 import random
 import string
 import logging
-import smtplib
-import requests
 from datetime import date, timedelta, timezone, datetime
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -20,41 +16,19 @@ from selenium.common.exceptions import TimeoutException, StaleElementReferenceEx
 from webdriver_manager.chrome import ChromeDriverManager
 import gspread
 from google.oauth2.service_account import Credentials
-
+ 
 # ==============================
 # ✅ PATHS
 # ==============================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CREDENTIALS_PATH = os.path.join(BASE_DIR, "credentials.json")
 LOG_PATH = os.path.join(BASE_DIR, "scraper.log")
-
+ 
 # ==============================
 # ✅ TIMEZONE
 # ==============================
 WIB = timezone(timedelta(hours=7))  # Asia/Jakarta
-
-# ==============================
-# ✅ SHEET URLS
-# ==============================
-FIXTURES_SHEET_URL = "https://docs.google.com/spreadsheets/d/1BhPU_hskjdgmuSHBcmoPhGxtUscpRLCRed_DITIIOq4/"
-READERS_SHEET_URL = "https://docs.google.com/spreadsheets/d/1e_cR5X9HCfszFVEbyq0VriX-KFjI0Wr6a9VIdHDV8Mo"
-
-# Name(s) to try when looking for the tab that holds Team / Logo columns.
-# Falls back to the second worksheet in the spreadsheet (index 1) if none
-# of these names match.
-LOGO_SHEET_NAME_CANDIDATES = ["Sheet2", "Sheet 2", "Logos", "Logo"]
-
-# ==============================
-# ✅ ALERT CONFIG (from environment / GitHub Secrets)
-# ==============================
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
-GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")  # Gmail App Password, not your normal password
-
-# Alert window: only fire for matches this many minutes out (1-2 hours)
-NOTIFY_MIN_MINUTES = int(os.environ.get("NOTIFY_MIN_MINUTES", "60"))
-NOTIFY_MAX_MINUTES = int(os.environ.get("NOTIFY_MAX_MINUTES", "120"))
-
+ 
 # ==============================
 # ✅ LOGGING
 # ==============================
@@ -66,7 +40,7 @@ logging.basicConfig(
 console = logging.StreamHandler()
 console.setLevel(logging.INFO)
 logging.getLogger().addHandler(console)
-
+ 
 # ==============================
 # ✅ DRIVER — with forced timezone
 # ==============================
@@ -77,22 +51,22 @@ def get_driver():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--lang=en-US")
-
+ 
     prefs = {"profile.managed_default_content_settings.images": 2}
     options.add_experimental_option("prefs", prefs)
-
+ 
     driver = webdriver.Chrome(
         service=Service(ChromeDriverManager().install()),
         options=options
     )
-
+ 
     driver.execute_cdp_cmd(
         "Emulation.setTimezoneOverride",
         {"timezoneId": "Asia/Jakarta"}
     )
-
+ 
     return driver
-
+ 
 # ==============================
 # ✅ ISO DATETIME PARSER
 # ==============================
@@ -107,7 +81,7 @@ def iso_to_wib_time(iso_str):
         return dt_wib.strftime("%H:%M")
     except Exception:
         return None
-
+ 
 def iso_to_wib_date(iso_str):
     """Convert ISO 8601 UTC string to DD/MM/YYYY in WIB (UTC+7)."""
     if not iso_str:
@@ -119,7 +93,7 @@ def iso_to_wib_date(iso_str):
         return dt_wib.strftime("%m/%d/%Y")
     except Exception:
         return None
-
+ 
 # ==============================
 # ✅ TIME VALIDATOR
 # ==============================
@@ -130,7 +104,7 @@ def is_valid_match_time(text):
         return False
     hh, mm = int(text[:2]), int(text[3:])
     return 0 <= hh <= 23 and 0 <= mm <= 59
-
+ 
 # ==============================
 # ✅ TIME EXTRACTION — all strategies in order
 # ==============================
@@ -149,7 +123,7 @@ def extract_time_from_card(match_element):
         pass
     except Exception as e:
         logging.debug(f"Strategy 1 error: {e}")
-
+ 
     # ── Strategy 2: data-testid attributes OneFootball uses ──────────────
     try:
         for testid in ["match-kickoff-time", "kickoff-time", "match-time", "fixture-time"]:
@@ -163,7 +137,7 @@ def extract_time_from_card(match_element):
                     return t
     except Exception as e:
         logging.debug(f"Strategy 2 error: {e}")
-
+ 
     # ── Strategy 3: aria-label on the match card itself ───────────────────
     try:
         label = match_element.get_attribute("aria-label") or ""
@@ -173,7 +147,7 @@ def extract_time_from_card(match_element):
             return t.group(1)
     except Exception as e:
         logging.debug(f"Strategy 3 error: {e}")
-
+ 
     # ── Strategy 4: leaf text nodes, strict HH:MM only ───────────────────
     try:
         leaf_nodes = match_element.find_elements(
@@ -187,10 +161,10 @@ def extract_time_from_card(match_element):
                 return t
     except Exception as e:
         logging.debug(f"Strategy 4 error: {e}")
-
+ 
     logging.warning("TIME not found in card")
     return "Unknown"
-
+ 
 # ==============================
 # ✅ DATE EXTRACTION from card
 # ==============================
@@ -206,12 +180,12 @@ def extract_date_from_card(match_element, text_lines):
                     return result
     except Exception:
         pass
-
+ 
     # Strategy 2: text line DD/MM/YYYY
     for l in text_lines:
         if re.match(r"^\d{2}/\d{2}/\d{4}$", l):
             return l
-
+ 
     # Strategy 3: relative date words
     today = date.today()
     for l in text_lines:
@@ -220,9 +194,9 @@ def extract_date_from_card(match_element, text_lines):
             return today.strftime("%d/%m/%Y")
         elif low == "tomorrow":
             return (today + timedelta(days=1)).strftime("%d/%m/%Y")
-
+ 
     return "Unknown"
-
+ 
 # ==============================
 # ✅ PARSER (✅ FILTER ADDED HERE ONLY)
 # ==============================
@@ -230,40 +204,33 @@ def parse_match_card(match):
     try:
         text = match.text.strip()
         lines = [l.strip() for l in text.split("\n") if l.strip()]
-
+ 
         if len(lines) < 2:
             return None
-
+ 
         home = lines[0]
         away = lines[1]
-
-        # ── ✅ capture the match's unique URL for reliable dedup ──────────
-        try:
-            match_url = match.get_attribute("href") or ""
-        except Exception:
-            match_url = ""
-
+ 
         skip_keywords = [
             "advertisement", "sign in", "follow", "subscribe", "download",
             "winner", "loser", "group"
         ]
-
+ 
         # ✅ FILTER BOTH HOME & AWAY
         if any(kw in home.lower() or kw in away.lower() for kw in skip_keywords):
             return None
-
+ 
         if len(home) < 2 or len(away) < 2:
             return None
-
+ 
         date_val = extract_date_from_card(match, lines)
         time_val = extract_time_from_card(match)
-
+ 
         return {
             "Home Team": home,
             "Away Team": away,
             "Date": date_val,
-            "Time": time_val,
-            "Match URL": match_url
+            "Time": time_val
         }
     except StaleElementReferenceException:
         logging.warning("Stale element skipped")
@@ -271,7 +238,7 @@ def parse_match_card(match):
     except Exception as e:
         logging.error(f"Parse error: {e}")
         return None
-
+ 
 # ==============================
 # ✅ SCRAPE — with proper lazy-load wait
 # ==============================
@@ -285,7 +252,7 @@ def scrape_competition(driver, name, url):
     except TimeoutException:
         logging.error(f"Timeout waiting for match cards on {name}")
         return []
-
+ 
     time.sleep(3)
     scroll_pause = 2.0
     last_count = 0
@@ -302,16 +269,16 @@ def scrape_competition(driver, name, url):
         else:
             stale_rounds = 0
             last_count = current_count
-
+ 
     driver.execute_script("window.scrollTo(0, 0)")
     time.sleep(1)
-
+ 
     matches = driver.find_elements(By.CSS_SELECTOR, "a[href*='/match/']")
     logging.info(f"Total match elements collected for {name}: {len(matches)}")
-
+ 
     results = []
     seen_keys = set()
-
+ 
     for m in matches:
         try:
             parsed = parse_match_card(m)
@@ -320,20 +287,16 @@ def scrape_competition(driver, name, url):
             continue
         if not parsed:
             continue
-        # Prefer the unique match URL for dedup; fall back to team+date
-        # only if the URL wasn't captured for some reason.
-        dedup_key = parsed.get("Match URL") or (
-            parsed["Home Team"], parsed["Away Team"], parsed["Date"]
-        )
+        dedup_key = (parsed["Home Team"], parsed["Away Team"], parsed["Date"])
         if dedup_key in seen_keys:
             continue
         seen_keys.add(dedup_key)
         parsed["Competition"] = name
         results.append(parsed)
-
+ 
     logging.info(f"{name}: {len(results)} unique fixtures parsed")
     return results
-
+ 
 # ==============================
 # ✅ DATE NORMALIZATION (fallback for text-based dates)
 # ==============================
@@ -347,7 +310,7 @@ def normalize_date(d):
     elif d == "yesterday":
         return (today - timedelta(days=1)).strftime("%d/%m/%Y")
     return d
-
+ 
 # ==============================
 # ✅ SHORT UNIQUE ID GENERATOR
 # ==============================
@@ -361,7 +324,7 @@ def generate_short_id(length=7, existing_ids=None):
         new_id = "".join(random.choices(chars, k=length))
         if new_id not in existing_ids:
             return new_id
-
+ 
 # ==============================
 # ✅ GET DATA
 # ==============================
@@ -381,22 +344,22 @@ def get_data():
             all_data.extend(scrape_competition(driver, name, url))
         except Exception as e:
             logging.error(f"{name} scrape error: {e}")
-
+ 
     driver.quit()
-
+ 
     if not all_data:
         logging.warning("No data collected from any competition.")
         return pd.DataFrame()
-
+ 
     df = pd.DataFrame(all_data)
     df["VS"] = "VS"
     df["Date"] = df["Date"].apply(normalize_date)
-
+ 
     before = len(df)
     df = df[df["Time"].apply(is_valid_match_time)]
     after = len(df)
     logging.info(f"Time filter: kept {after} of {before} rows")
-
+ 
     # ── ✅ combine Date + Time into MatchTime datetime column ────────
     df["MatchTime"] = pd.to_datetime(
         df["Date"] + " " + df["Time"],
@@ -405,7 +368,7 @@ def get_data():
     ).dt.strftime("%m/%d/%Y %H:%M")
     logging.info("MatchTime column added.")
     # ─────────────────────────────────────────────────────────────────
-
+ 
     # ── ✅ generate short unique ID per fixture row ───────────────────
     existing_ids = set()
     ids = []
@@ -416,92 +379,32 @@ def get_data():
     df.insert(0, "ID", ids)
     logging.info("ID column added.")
     # ─────────────────────────────────────────────────────────────────
-
-    # ── ✅ final safety-net dedupe before anything gets uploaded ────────
-    before_dedup = len(df)
-    df = df.drop_duplicates(
-        subset=["Home Team", "Away Team", "Date", "Time"], keep="first"
-    ).reset_index(drop=True)
-    after_dedup = len(df)
-    if after_dedup < before_dedup:
-        logging.warning(
-            f"Global dedupe removed {before_dedup - after_dedup} duplicate row(s) "
-            f"(kept {after_dedup} of {before_dedup})."
-        )
-    # ─────────────────────────────────────────────────────────────────
-
+ 
     return df
-
+ 
 # ==============================
-# ✅ MERGE LOGOS  (fixed: reads the 'Sheet2' tab of the fixtures
-# spreadsheet directly via gspread, instead of a gid-less CSV export
-# of the whole spreadsheet — which was silently returning sheet1's
-# fixture data instead of the Team/Logo table, and left the logo
-# columns blank).
+# ✅ MERGE LOGOS
 # ==============================
-def get_logo_worksheet(spreadsheet):
-    """Find the tab that holds Team / Logo columns.
-
-    Tries a few common names first ('Sheet2', 'Sheet 2', 'Logos', 'Logo'),
-    then falls back to whichever worksheet is second in the spreadsheet
-    (index 1), since that's where the user keeps it.
-    """
-    for name in LOGO_SHEET_NAME_CANDIDATES:
-        try:
-            return spreadsheet.worksheet(name)
-        except gspread.exceptions.WorksheetNotFound:
-            continue
-        except Exception:
-            continue
-
+def merge_logos(df):
+    logo_url = (
+        "https://docs.google.com/spreadsheets/d/"
+        "1BhPU_hskjdgmuSHBcmoPhGxtUscpRLCRed_DITIIOq4"
+        "/gviz/tq?tqx=out:csv"
+    )
     try:
-        worksheets = spreadsheet.worksheets()
-        if len(worksheets) > 1:
-            return worksheets[1]
-    except Exception:
-        pass
-
-    return None
-
-def merge_logos(client, df):
-    try:
-        spreadsheet = client.open_by_url(FIXTURES_SHEET_URL)
-        logo_ws = get_logo_worksheet(spreadsheet)
-        if logo_ws is None:
-            raise RuntimeError(
-                "Could not find a logo worksheet (tried "
-                f"{LOGO_SHEET_NAME_CANDIDATES} and the 2nd tab by position)."
-            )
-
-        records = logo_ws.get_all_records()
-        logos = pd.DataFrame(records)
-        if logos.empty:
-            raise RuntimeError(f"Logo worksheet '{logo_ws.title}' is empty.")
-
+        logos = pd.read_csv(logo_url)
         team_col = [c for c in logos.columns if "team" in c.lower()][0]
         logo_col = [c for c in logos.columns if "logo" in c.lower()][0]
         logos = logos[[team_col, logo_col]].rename(
             columns={team_col: "Team", logo_col: "Logo"}
         )
-        logos["Team"] = logos["Team"].astype(str).str.strip()
-
-        # ── ✅ guard against duplicate team rows in the logo sheet, which
-        # would otherwise fan out into duplicate fixture rows on merge ──
-        before_logo_dedup = len(logos)
-        logos = logos.drop_duplicates(subset=["Team"], keep="first")
-        if len(logos) < before_logo_dedup:
-            logging.warning(
-                f"Logo sheet had {before_logo_dedup - len(logos)} duplicate "
-                f"team row(s) — deduped before merging."
-            )
-
         df = df.merge(logos, left_on="Home Team", right_on="Team", how="left")
         df.rename(columns={"Logo": "Home Team Logo"}, inplace=True)
         df.drop(columns=["Team"], inplace=True)
         df = df.merge(logos, left_on="Away Team", right_on="Team", how="left")
         df.rename(columns={"Logo": "Away Team Logo"}, inplace=True)
         df.drop(columns=["Team"], inplace=True)
-        logging.info(f"Logos merged from worksheet '{logo_ws.title}'.")
+        logging.info("Logos merged.")
     except Exception as e:
         logging.warning(f"Logo merge failed: {e}")
         df["Home Team Logo"] = ""
@@ -562,211 +465,21 @@ def add_match_type(df: pd.DataFrame) -> pd.DataFrame:
 # ==============================
 # ✅ GOOGLE SHEETS
 # ==============================
-def get_sheets_client():
+def upload_to_sheets(df):
     scope = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
     ]
     creds = Credentials.from_service_account_file(CREDENTIALS_PATH, scopes=scope)
-    return gspread.authorize(creds)
-
-def preserve_notified_flags(df, ws):
-    """
-    Before wiping the sheet, read the existing 'Notified' values keyed by
-    (Home Team, Away Team, Date) and carry them onto the freshly scraped
-    rows, so already-alerted matches don't get alerted again.
-    """
-    df["Notified"] = "FALSE"
-    try:
-        existing = ws.get_all_records()
-    except Exception as e:
-        logging.warning(f"Could not read existing sheet for Notified carry-over: {e}")
-        return df
-
-    notified_map = {}
-    for row in existing:
-        key = (row.get("Home Team"), row.get("Away Team"), row.get("Date"))
-        notified_map[key] = str(row.get("Notified", "")).strip().upper()
-
-    def lookup(row):
-        key = (row["Home Team"], row["Away Team"], row["Date"])
-        return "TRUE" if notified_map.get(key) == "TRUE" else "FALSE"
-
-    df["Notified"] = df.apply(lookup, axis=1)
-    logging.info("Notified flags carried over from previous sheet state.")
-    return df
-
-def upload_to_sheets(client, df):
-    sheet = client.open_by_url(FIXTURES_SHEET_URL)
+    client = gspread.authorize(creds)
+    sheet = client.open_by_url(
+        "https://docs.google.com/spreadsheets/d/1BhPU_hskjdgmuSHBcmoPhGxtUscpRLCRed_DITIIOq4/"
+    )
     ws = sheet.sheet1
-    df = preserve_notified_flags(df, ws)
     ws.clear()
     df = df.fillna("").astype(str)
     ws.update([df.columns.tolist()] + df.values.tolist())
     logging.info(f"Uploaded {len(df)} rows to Google Sheets.")
-    return ws, df
-
-# ==============================
-# ✅ ALERTS — find matches due soon
-# ==============================
-def matches_due_soon(df):
-    now = datetime.now(WIB)
-    due = []
-    for _, row in df.iterrows():
-        if str(row.get("Notified", "")).strip().upper() == "TRUE":
-            continue
-
-        match_time_str = str(row.get("MatchTime", "")).strip()
-        if not match_time_str:
-            continue
-
-        try:
-            kickoff = datetime.strptime(match_time_str, "%m/%d/%Y %H:%M").replace(tzinfo=WIB)
-        except ValueError:
-            continue
-
-        minutes_until = (kickoff - now).total_seconds() / 60
-        if NOTIFY_MIN_MINUTES <= minutes_until <= NOTIFY_MAX_MINUTES:
-            due.append(row)
-
-    return due
-
-# ==============================
-# ✅ ALERTS — load reader contacts
-# ==============================
-def load_readers(client):
-    """
-    Pull email addresses from the 'info' tab, and Telegram chat IDs from an
-    'info_telegram' tab (columns: Nama, Telegram Chat ID).
-
-    NOTE: Telegram only lets a bot message users who have already messaged
-    the bot at least once — readers need to /start your bot and you need to
-    record their chat ID in 'info_telegram' (e.g. via a form field).
-    """
-    sheet = client.open_by_url(READERS_SHEET_URL)
-
-    emails = []
-    try:
-        info_ws = sheet.worksheet("info")
-        for row in info_ws.get_all_records():
-            email = str(row.get("Email", "")).strip()
-            if email:
-                emails.append(email)
-    except Exception as e:
-        logging.warning(f"Could not load 'info' sheet for emails: {e}")
-
-    chat_ids = []
-    try:
-        tg_ws = sheet.worksheet("info_telegram")
-        for row in tg_ws.get_all_records():
-            cid = str(row.get("Telegram Chat ID", "")).strip()
-            if cid:
-                chat_ids.append(cid)
-    except Exception as e:
-        logging.warning(f"'info_telegram' sheet not found or unreadable, skipping Telegram: {e}")
-
-    return sorted(set(emails)), sorted(set(chat_ids))
-
-# ==============================
-# ✅ ALERTS — Telegram
-# ==============================
-def send_telegram_message(chat_id, text):
-    if not TELEGRAM_BOT_TOKEN:
-        logging.warning("TELEGRAM_BOT_TOKEN not set — skipping Telegram send.")
-        return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    try:
-        resp = requests.post(
-            url,
-            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
-            timeout=15
-        )
-        if resp.status_code == 200:
-            return True
-        logging.error(f"Telegram send failed for {chat_id} ({resp.status_code}): {resp.text}")
-    except Exception as e:
-        logging.error(f"Telegram send error for {chat_id}: {e}")
-    return False
-
-# ==============================
-# ✅ ALERTS — Gmail digest
-# ==============================
-def send_email_digest(recipients, subject, body):
-    if not (GMAIL_ADDRESS and GMAIL_APP_PASSWORD):
-        logging.warning("GMAIL_ADDRESS / GMAIL_APP_PASSWORD not set — skipping email.")
-        return
-    if not recipients:
-        logging.info("No email recipients — skipping email digest.")
-        return
-
-    msg = MIMEMultipart()
-    msg["From"] = GMAIL_ADDRESS
-    msg["Subject"] = subject
-    msg["Bcc"] = ", ".join(recipients)
-    msg.attach(MIMEText(body, "plain"))
-
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-            server.sendmail(GMAIL_ADDRESS, recipients, msg.as_string())
-        logging.info(f"Email digest sent to {len(recipients)} recipients.")
-    except Exception as e:
-        logging.error(f"Email send failed: {e}")
-
-# ==============================
-# ✅ ALERTS — message builder
-# ==============================
-def build_alert_text(matches):
-    lines = ["⚽ Matches kicking off soon:\n"]
-    for m in matches:
-        lines.append(
-            f"{m.get('Home Team')} vs {m.get('Away Team')} — "
-            f"{m.get('Time')} WIB ({m.get('Competition')})"
-        )
-    return "\n".join(lines)
-
-# ==============================
-# ✅ ALERTS — mark matches as notified
-# ==============================
-def mark_as_notified(ws, notified_ids):
-    header = ws.row_values(1)
-    if "Notified" not in header or "ID" not in header:
-        logging.warning("'Notified' or 'ID' column missing — cannot mark rows as notified.")
-        return
-
-    id_col_index = header.index("ID") + 1
-    notified_col_index = header.index("Notified") + 1
-
-    id_column_values = ws.col_values(id_col_index)  # includes header at index 0
-    for row_num, cell_id in enumerate(id_column_values[1:], start=2):
-        if cell_id in notified_ids:
-            ws.update_cell(row_num, notified_col_index, "TRUE")
-
-# ==============================
-# ✅ ALERTS — run the check-and-notify step
-# ==============================
-def run_alerts(client, ws, df):
-    due = matches_due_soon(df)
-    if not due:
-        logging.info("No matches due for alerting right now.")
-        return
-
-    logging.info(f"{len(due)} match(es) due for alerts.")
-    emails, chat_ids = load_readers(client)
-    alert_text = build_alert_text(due)
-
-    sent_telegram = 0
-    for cid in chat_ids:
-        if send_telegram_message(cid, alert_text):
-            sent_telegram += 1
-        time.sleep(0.3)  # gentle on Telegram rate limits
-    logging.info(f"Telegram: sent to {sent_telegram}/{len(chat_ids)} chat IDs.")
-
-    send_email_digest(emails, "⚽ Matches starting soon!", alert_text)
-
-    notified_ids = {row.get("ID") for row in due if row.get("ID")}
-    mark_as_notified(ws, notified_ids)
-    logging.info(f"Marked {len(notified_ids)} match(es) as notified.")
 
 # ==============================
 # ✅ SAFE RUN
@@ -774,31 +487,12 @@ def run_alerts(client, ws, df):
 def safe_run(max_retries=3):
     for attempt in range(1, max_retries + 1):
         try:
-            # ── Get the Sheets client first — merge_logos now needs it
-            # to read the Team/Logo tab directly. ──────────────────────
-            client = get_sheets_client()
-
             df = get_data()
             if not df.empty:
-                df = merge_logos(client, df)
-
-                # ── ✅ safety net: ID is unique per scraped fixture, so if
-                # the logo merge (or anything else) fanned out any rows,
-                # this collapses them back down. ─────────────────────────
-                before_id_dedup = len(df)
-                df = df.drop_duplicates(subset=["ID"], keep="first").reset_index(drop=True)
-                if len(df) < before_id_dedup:
-                    logging.warning(
-                        f"Post-merge dedupe removed {before_id_dedup - len(df)} "
-                        f"duplicate row(s) (kept {len(df)} of {before_id_dedup})."
-                    )
-
+                df = merge_logos(df)
                 df = add_club_classification(df)
                 df = add_match_type(df)
-
-                ws, df = upload_to_sheets(client, df)
-                run_alerts(client, ws, df)
-
+                upload_to_sheets(df)
                 logging.info(f"✅ SUCCESS on attempt {attempt}")
                 return
             else:
@@ -827,47 +521,47 @@ creds = Credentials.from_service_account_file(
     ]
 )
 client = gspread.authorize(creds)
-
+ 
 # ==============================
 # OPEN FILE
 # ==============================
 sheet_url = "https://docs.google.com/spreadsheets/d/1e_cR5X9HCfszFVEbyq0VriX-KFjI0Wr6a9VIdHDV8Mo"
 spreadsheet = client.open_by_url(sheet_url)
-
+ 
 # SOURCE (Form responses tab) - referenced by title, safer than by_id
 source_ws = spreadsheet.worksheet("Form Responses 1")
-
+ 
 # TARGET (the "info" tab — NOT sheet1!)
 target_ws = spreadsheet.worksheet("info")
-
+ 
 # TARGET (the "info_wa" tab)
 target_ws_wa = spreadsheet.worksheet("info_wa")
-
+ 
 # ==============================
 # LOAD DATA
 # ==============================
 data = source_ws.get_all_records()
 df = pd.DataFrame(data)
-
+ 
 # ==============================
 # PROCESS — "info" sheet (Timestamp, Nama, Email, Country)
 # ==============================
-col = "Which club are you supporting?"
-
+col = "Which country are you supporting?"
+ 
 df_info = df[["Timestamp", "Nama", "Email", col]].copy()
-
+ 
 # split by comma OR semicolon
 df_info[col] = df_info[col].astype(str).str.split(r",|;")
-
+ 
 # make rows
 df_info = df_info.explode(col)
-
+ 
 # clean spaces
 df_info[col] = df_info[col].str.strip()
-
+ 
 # remove empty
 df_info = df_info[df_info[col] != ""]
-
+ 
 # remove rows where Timestamp, Nama, or Email is blank
 df_info["Timestamp"] = df_info["Timestamp"].astype(str).str.strip()
 df_info["Nama"] = df_info["Nama"].astype(str).str.strip()
@@ -877,58 +571,58 @@ df_info = df_info[
     (df_info["Nama"] != "") &
     (df_info["Email"] != "")
 ]
-
+ 
 # ==============================
-# PROCESS — "info_wa" sheet (Timestamp, Nama, ID Telegram, Country)
+# PROCESS — "info_wa" sheet (Timestamp, Nama, Phone Number, Country)
 # ==============================
-df_wa = df[["Timestamp", "Nama", "ID Telegram", col]].copy()
-
+df_wa = df[["Timestamp", "Nama", "Phone Number", col]].copy()
+ 
 # split by comma OR semicolon
 df_wa[col] = df_wa[col].astype(str).str.split(r",|;")
-
+ 
 # make rows
 df_wa = df_wa.explode(col)
-
+ 
 # clean spaces
 df_wa[col] = df_wa[col].str.strip()
-
+ gma
 # remove empty
 df_wa = df_wa[df_wa[col] != ""]
-
-# remove rows where Timestamp, Nama, or ID Telegram is blank
+ 
+# remove rows where Timestamp, Nama, or Phone Number is blank
 df_wa["Timestamp"] = df_wa["Timestamp"].astype(str).str.strip()
 df_wa["Nama"] = df_wa["Nama"].astype(str).str.strip()
-df_wa["ID Telegram"] = df_wa["ID Telegram"].astype(str).str.strip()
+df_wa["Phone Number"] = df_wa["Phone Number"].astype(str).str.strip()
 df_wa = df_wa[
     (df_wa["Timestamp"] != "") &
     (df_wa["Nama"] != "") &
-    (df_wa["ID Telegram"] != "")
+    (df_wa["Phone Number"] != "")
 ]
-
+ 
 # ==============================
 # CLEAR TARGET ("info" only)
 # ==============================
 target_ws.clear()
-
+ 
 # ==============================
 # WRITE RESULT — "info"
 # ==============================
 target_ws.update(
     [df_info.columns.values.tolist()] + df_info.values.tolist()
 )
-
+ 
 print("DONE ✅ — 'info' sheet updated, 'Form Responses 1' untouched")
-
+ 
 # ==============================
 # CLEAR TARGET ("info_wa" only)
 # ==============================
 target_ws_wa.clear()
-
+ 
 # ==============================
 # WRITE RESULT — "info_wa"
 # ==============================
 target_ws_wa.update(
     [df_wa.columns.values.tolist()] + df_wa.values.tolist()
 )
-
+ 
 print("DONE ✅ — 'info_wa' sheet updated, 'Form Responses 1' untouched")
