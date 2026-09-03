@@ -2,8 +2,6 @@ import pandas as pd
 import os
 import time
 import re
-import random
-import string
 import logging
 from datetime import date, timedelta, timezone, datetime
 from selenium import webdriver
@@ -16,57 +14,49 @@ from selenium.common.exceptions import TimeoutException, StaleElementReferenceEx
 from webdriver_manager.chrome import ChromeDriverManager
 import gspread
 from google.oauth2.service_account import Credentials
- 
 # ==============================
 # ✅ PATHS
 # ==============================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CREDENTIALS_PATH = os.path.join(BASE_DIR, "credentials.json")
 LOG_PATH = os.path.join(BASE_DIR, "scraper.log")
- 
 # ==============================
-# ✅ TIMEZONE
+# ✅ TIMEZONE — ROOT CAUSE #1
 # ==============================
 WIB = timezone(timedelta(hours=7))  # Asia/Jakarta
- 
 # ==============================
 # ✅ LOGGING
 # ==============================
 logging.basicConfig(
     filename=LOG_PATH,
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
+    format="%(asctime)s - %(levelname)s - %(message)s"
 )
 console = logging.StreamHandler()
 console.setLevel(logging.INFO)
 logging.getLogger().addHandler(console)
- 
 # ==============================
 # ✅ DRIVER — with forced timezone
 # ==============================
 def get_driver():
     options = Options()
     options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--lang=en-US")
- 
     prefs = {"profile.managed_default_content_settings.images": 2}
     options.add_experimental_option("prefs", prefs)
- 
     driver = webdriver.Chrome(
         service=Service(ChromeDriverManager().install()),
         options=options
     )
- 
     driver.execute_cdp_cmd(
         "Emulation.setTimezoneOverride",
         {"timezoneId": "Asia/Jakarta"}
     )
- 
     return driver
- 
 # ==============================
 # ✅ ISO DATETIME PARSER
 # ==============================
@@ -81,7 +71,7 @@ def iso_to_wib_time(iso_str):
         return dt_wib.strftime("%H:%M")
     except Exception:
         return None
- 
+
 def iso_to_wib_date(iso_str):
     """Convert ISO 8601 UTC string to DD/MM/YYYY in WIB (UTC+7)."""
     if not iso_str:
@@ -90,10 +80,9 @@ def iso_to_wib_date(iso_str):
     try:
         dt_utc = datetime.fromisoformat(iso_str)
         dt_wib = dt_utc.astimezone(WIB)
-        return dt_wib.strftime("%m/%d/%Y")
+        return dt_wib.strftime("%d/%m/%Y")
     except Exception:
         return None
- 
 # ==============================
 # ✅ TIME VALIDATOR
 # ==============================
@@ -104,7 +93,6 @@ def is_valid_match_time(text):
         return False
     hh, mm = int(text[:2]), int(text[3:])
     return 0 <= hh <= 23 and 0 <= mm <= 59
- 
 # ==============================
 # ✅ TIME EXTRACTION — all strategies in order
 # ==============================
@@ -123,7 +111,6 @@ def extract_time_from_card(match_element):
         pass
     except Exception as e:
         logging.debug(f"Strategy 1 error: {e}")
- 
     # ── Strategy 2: data-testid attributes OneFootball uses ──────────────
     try:
         for testid in ["match-kickoff-time", "kickoff-time", "match-time", "fixture-time"]:
@@ -137,7 +124,6 @@ def extract_time_from_card(match_element):
                     return t
     except Exception as e:
         logging.debug(f"Strategy 2 error: {e}")
- 
     # ── Strategy 3: aria-label on the match card itself ───────────────────
     try:
         label = match_element.get_attribute("aria-label") or ""
@@ -147,7 +133,6 @@ def extract_time_from_card(match_element):
             return t.group(1)
     except Exception as e:
         logging.debug(f"Strategy 3 error: {e}")
- 
     # ── Strategy 4: leaf text nodes, strict HH:MM only ───────────────────
     try:
         leaf_nodes = match_element.find_elements(
@@ -161,10 +146,8 @@ def extract_time_from_card(match_element):
                 return t
     except Exception as e:
         logging.debug(f"Strategy 4 error: {e}")
- 
     logging.warning("TIME not found in card")
     return "Unknown"
- 
 # ==============================
 # ✅ DATE EXTRACTION from card
 # ==============================
@@ -180,12 +163,10 @@ def extract_date_from_card(match_element, text_lines):
                     return result
     except Exception:
         pass
- 
     # Strategy 2: text line DD/MM/YYYY
     for l in text_lines:
         if re.match(r"^\d{2}/\d{2}/\d{4}$", l):
             return l
- 
     # Strategy 3: relative date words
     today = date.today()
     for l in text_lines:
@@ -194,38 +175,25 @@ def extract_date_from_card(match_element, text_lines):
             return today.strftime("%d/%m/%Y")
         elif low == "tomorrow":
             return (today + timedelta(days=1)).strftime("%d/%m/%Y")
- 
     return "Unknown"
- 
 # ==============================
-# ✅ PARSER (✅ FILTER ADDED HERE ONLY)
+# ✅ PARSER
 # ==============================
 def parse_match_card(match):
     try:
         text = match.text.strip()
         lines = [l.strip() for l in text.split("\n") if l.strip()]
- 
         if len(lines) < 2:
             return None
- 
         home = lines[0]
         away = lines[1]
- 
-        skip_keywords = [
-            "advertisement", "sign in", "follow", "subscribe", "download",
-            "winner", "loser", "group"
-        ]
- 
-        # ✅ FILTER BOTH HOME & AWAY
-        if any(kw in home.lower() or kw in away.lower() for kw in skip_keywords):
+        skip_keywords = ["advertisement", "sign in", "follow", "subscribe", "download"]
+        if any(kw in home.lower() for kw in skip_keywords):
             return None
- 
         if len(home) < 2 or len(away) < 2:
             return None
- 
         date_val = extract_date_from_card(match, lines)
         time_val = extract_time_from_card(match)
- 
         return {
             "Home Team": home,
             "Away Team": away,
@@ -238,7 +206,6 @@ def parse_match_card(match):
     except Exception as e:
         logging.error(f"Parse error: {e}")
         return None
- 
 # ==============================
 # ✅ SCRAPE — with proper lazy-load wait
 # ==============================
@@ -252,7 +219,6 @@ def scrape_competition(driver, name, url):
     except TimeoutException:
         logging.error(f"Timeout waiting for match cards on {name}")
         return []
- 
     time.sleep(3)
     scroll_pause = 2.0
     last_count = 0
@@ -269,16 +235,12 @@ def scrape_competition(driver, name, url):
         else:
             stale_rounds = 0
             last_count = current_count
- 
     driver.execute_script("window.scrollTo(0, 0)")
     time.sleep(1)
- 
     matches = driver.find_elements(By.CSS_SELECTOR, "a[href*='/match/']")
     logging.info(f"Total match elements collected for {name}: {len(matches)}")
- 
     results = []
     seen_keys = set()
- 
     for m in matches:
         try:
             parsed = parse_match_card(m)
@@ -293,10 +255,8 @@ def scrape_competition(driver, name, url):
         seen_keys.add(dedup_key)
         parsed["Competition"] = name
         results.append(parsed)
- 
     logging.info(f"{name}: {len(results)} unique fixtures parsed")
     return results
- 
 # ==============================
 # ✅ DATE NORMALIZATION (fallback for text-based dates)
 # ==============================
@@ -310,33 +270,14 @@ def normalize_date(d):
     elif d == "yesterday":
         return (today - timedelta(days=1)).strftime("%d/%m/%Y")
     return d
- 
-# ==============================
-# ✅ SHORT UNIQUE ID GENERATOR
-# ==============================
-def generate_short_id(length=7, existing_ids=None):
-    """Generate a random alphanumeric ID (default 7 chars), avoiding collisions
-    with any IDs already generated in the current batch."""
-    if existing_ids is None:
-        existing_ids = set()
-    chars = string.ascii_uppercase + string.digits
-    while True:
-        new_id = "".join(random.choices(chars, k=length))
-        if new_id not in existing_ids:
-            return new_id
- 
 # ==============================
 # ✅ GET DATA
 # ==============================
 def get_data():
     driver = get_driver()
     competitions = {
-        "EPL": "https://onefootball.com/en/competition/premier-league-9/fixtures",
-        "UCL": "https://onefootball.com/en/competition/uefa-champions-league-5/fixtures",
-        "FA Cup": "https://onefootball.com/en/competition/fa-cup-17/fixtures",
-        "LaLiga": "https://onefootball.com/en/competition/laliga-10/fixtures",
-        "Serie A": "https://onefootball.com/en/competition/serie-a-13/fixtures",
-        "UEL": "https://onefootball.com/en/competition/uefa-europa-league-7/fixtures"
+        "UCL":  "https://onefootball.com/en/competition/uefa-champions-league-5/fixtures",
+        "UECL": "https://onefootball.com/en/competition/uefa-conference-league-2762/fixtures",
     }
     all_data = []
     for name, url in competitions.items():
@@ -344,51 +285,25 @@ def get_data():
             all_data.extend(scrape_competition(driver, name, url))
         except Exception as e:
             logging.error(f"{name} scrape error: {e}")
- 
     driver.quit()
- 
     if not all_data:
         logging.warning("No data collected from any competition.")
         return pd.DataFrame()
- 
     df = pd.DataFrame(all_data)
     df["VS"] = "VS"
     df["Date"] = df["Date"].apply(normalize_date)
- 
     before = len(df)
     df = df[df["Time"].apply(is_valid_match_time)]
     after = len(df)
     logging.info(f"Time filter: kept {after} of {before} rows")
- 
-    # ── ✅ combine Date + Time into MatchTime datetime column ────────
-    df["MatchTime"] = pd.to_datetime(
-        df["Date"] + " " + df["Time"],
-        format="%m/%d/%Y %H:%M",
-        errors="coerce"
-    ).dt.strftime("%m/%d/%Y %H:%M")
-    logging.info("MatchTime column added.")
-    # ─────────────────────────────────────────────────────────────────
- 
-    # ── ✅ generate short unique ID per fixture row ───────────────────
-    existing_ids = set()
-    ids = []
-    for _ in range(len(df)):
-        new_id = generate_short_id(length=7, existing_ids=existing_ids)
-        existing_ids.add(new_id)
-        ids.append(new_id)
-    df.insert(0, "ID", ids)
-    logging.info("ID column added.")
-    # ─────────────────────────────────────────────────────────────────
- 
     return df
- 
 # ==============================
 # ✅ MERGE LOGOS
 # ==============================
 def merge_logos(df):
     logo_url = (
         "https://docs.google.com/spreadsheets/d/"
-        "1BhPU_hskjdgmuSHBcmoPhGxtUscpRLCRed_DITIIOq4"
+        "1BLZ-YDZJqwk1LcSQ79bDOGcdue1OwdG4jrrXjSh6vKs"
         "/gviz/tq?tqx=out:csv"
     )
     try:
@@ -410,27 +325,16 @@ def merge_logos(df):
         df["Home Team Logo"] = ""
         df["Away Team Logo"] = ""
     return df
-
 # ==============================
 # ✅ CLASSIFY CLUB SIZE
 # ==============================
 BIG_CLUBS = {
-    "arsenal",
-    "liverpool fc",
-    "manchester united",
-    "manchester city",
-    "chelsea",
-    "tottenham hotspur",
-    "real madrid",
-    "barcelona",
-    "psg",
-    "atlético de madrid",
-    "napoli",
-    "inter milan",
-    "milan",
-    "juventus",
-    "bayern munich",
-    "borussia dortmund"
+    "real madrid", "barcelona", "atletico madrid",
+    "arsenal", "chelsea", "tottenham", "manchester united",
+    "manchester city", "liverpool",
+    "inter milan", "ac milan", "a. c milan", "napoli", "juventus",
+    "bayern munich", "bayern munchen",
+    "psg", "paris saint-germain"
 }
 
 def classify_club(team_name: str) -> str:
@@ -443,7 +347,6 @@ def add_club_classification(df: pd.DataFrame) -> pd.DataFrame:
     df["Away Club Type"] = df["Away Team"].apply(classify_club)
     logging.info("Club classification columns added.")
     return df
-
 # ==============================
 # ✅ CLASSIFY MATCH TYPE
 # ==============================
@@ -461,7 +364,6 @@ def add_match_type(df: pd.DataFrame) -> pd.DataFrame:
     )
     logging.info("Match type column added.")
     return df
-
 # ==============================
 # ✅ GOOGLE SHEETS
 # ==============================
@@ -480,7 +382,6 @@ def upload_to_sheets(df):
     df = df.fillna("").astype(str)
     ws.update([df.columns.tolist()] + df.values.tolist())
     logging.info(f"Uploaded {len(df)} rows to Google Sheets.")
-
 # ==============================
 # ✅ SAFE RUN
 # ==============================
@@ -490,8 +391,8 @@ def safe_run(max_retries=3):
             df = get_data()
             if not df.empty:
                 df = merge_logos(df)
-                df = add_club_classification(df)
-                df = add_match_type(df)
+                df = add_club_classification(df)   # ← classify Big/Small Club
+                df = add_match_type(df)            # ← classify Big Match / Non Big Match
                 upload_to_sheets(df)
                 logging.info(f"✅ SUCCESS on attempt {attempt}")
                 return
@@ -500,129 +401,11 @@ def safe_run(max_retries=3):
         except Exception as e:
             logging.error(f"Attempt {attempt} failed: {e}")
         if attempt < max_retries:
-            logging.info("Retrying in 15s...")
+            logging.info(f"Retrying in 15s...")
             time.sleep(15)
     logging.error("❌ ALL RETRIES FAILED")
-
 # ==============================
 # ✅ MAIN
 # ==============================
 if __name__ == "__main__":
     safe_run()
-
-# ==============================
-# AUTH
-# ==============================
-creds = Credentials.from_service_account_file(
-    CREDENTIALS_PATH,
-    scopes=[
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-)
-client = gspread.authorize(creds)
- 
-# ==============================
-# OPEN FILE
-# ==============================
-sheet_url = "https://docs.google.com/spreadsheets/d/1e_cR5X9HCfszFVEbyq0VriX-KFjI0Wr6a9VIdHDV8Mo"
-spreadsheet = client.open_by_url(sheet_url)
- 
-# SOURCE (Form responses tab) - referenced by title, safer than by_id
-source_ws = spreadsheet.worksheet("Form Responses 1")
- 
-# TARGET (the "info" tab — NOT sheet1!)
-target_ws = spreadsheet.worksheet("info")
- 
-# TARGET (the "info_wa" tab)
-target_ws_wa = spreadsheet.worksheet("info_wa")
- 
-# ==============================
-# LOAD DATA
-# ==============================
-data = source_ws.get_all_records()
-df = pd.DataFrame(data)
- 
-# ==============================
-# PROCESS — "info" sheet (Timestamp, Nama, Email, Country)
-# ==============================
-col = "Which country are you supporting?"
- 
-df_info = df[["Timestamp", "Nama", "Email", col]].copy()
- 
-# split by comma OR semicolon
-df_info[col] = df_info[col].astype(str).str.split(r",|;")
- 
-# make rows
-df_info = df_info.explode(col)
- 
-# clean spaces
-df_info[col] = df_info[col].str.strip()
- 
-# remove empty
-df_info = df_info[df_info[col] != ""]
- 
-# remove rows where Timestamp, Nama, or Email is blank
-df_info["Timestamp"] = df_info["Timestamp"].astype(str).str.strip()
-df_info["Nama"] = df_info["Nama"].astype(str).str.strip()
-df_info["Email"] = df_info["Email"].astype(str).str.strip()
-df_info = df_info[
-    (df_info["Timestamp"] != "") &
-    (df_info["Nama"] != "") &
-    (df_info["Email"] != "")
-]
- 
-# ==============================
-# PROCESS — "info_wa" sheet (Timestamp, Nama, Phone Number, Country)
-# ==============================
-df_wa = df[["Timestamp", "Nama", "Phone Number", col]].copy()
- 
-# split by comma OR semicolon
-df_wa[col] = df_wa[col].astype(str).str.split(r",|;")
- 
-# make rows
-df_wa = df_wa.explode(col)
- 
-# clean spaces
-df_wa[col] = df_wa[col].str.strip()
- gma
-# remove empty
-df_wa = df_wa[df_wa[col] != ""]
- 
-# remove rows where Timestamp, Nama, or Phone Number is blank
-df_wa["Timestamp"] = df_wa["Timestamp"].astype(str).str.strip()
-df_wa["Nama"] = df_wa["Nama"].astype(str).str.strip()
-df_wa["Phone Number"] = df_wa["Phone Number"].astype(str).str.strip()
-df_wa = df_wa[
-    (df_wa["Timestamp"] != "") &
-    (df_wa["Nama"] != "") &
-    (df_wa["Phone Number"] != "")
-]
- 
-# ==============================
-# CLEAR TARGET ("info" only)
-# ==============================
-target_ws.clear()
- 
-# ==============================
-# WRITE RESULT — "info"
-# ==============================
-target_ws.update(
-    [df_info.columns.values.tolist()] + df_info.values.tolist()
-)
- 
-print("DONE ✅ — 'info' sheet updated, 'Form Responses 1' untouched")
- 
-# ==============================
-# CLEAR TARGET ("info_wa" only)
-# ==============================
-target_ws_wa.clear()
- 
-# ==============================
-# WRITE RESULT — "info_wa"
-# ==============================
-target_ws_wa.update(
-    [df_wa.columns.values.tolist()] + df_wa.values.tolist()
-)
- 
-print("DONE ✅ — 'info_wa' sheet updated, 'Form Responses 1' untouched")
