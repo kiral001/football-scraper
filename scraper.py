@@ -278,6 +278,11 @@ def get_data():
     competitions = {
         "UCL":  "https://onefootball.com/en/competition/uefa-champions-league-5/fixtures",
         "UECL": "https://onefootball.com/en/competition/uefa-conference-league-2762/fixtures",
+        "EPL" : "https://onefootball.com/en/competition/premier-league-9/fixtures",
+        "Laliga" : "https://onefootball.com/en/competition/laliga-10/fixtures",
+        "Fa Cup" : "https://onefootball.com/en/competition/fa-cup-17/fixtures",
+        "Serie A" : "https://onefootball.com/en/competition/serie-a-13",
+        "UEL: : "https://onefootball.com/en/competition/uefa-europa-league-7/fixtures"
     }
     all_data = []
     for name, url in competitions.items():
